@@ -33,7 +33,21 @@
     }
   }
 
+  let observer = null;
+
+  function isExtensionContextValid() {
+    try {
+      return Boolean(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+    } catch {
+      return false;
+    }
+  }
+
   function scanFrameForVideos(forceResend = false) {
+    if (!isExtensionContextValid()) {
+      if (observer) observer.disconnect();
+      return;
+    }
     if (forceResend) {
       sentUrls.clear();
     }
@@ -289,11 +303,15 @@
       });
     }
 
-    if (found.length > 0) {
-      chrome.runtime.sendMessage({
-        action: 'ADD_DOM_VIDEOS',
-        videos: found
-      }).catch(() => {});
+    if (found.length > 0 && isExtensionContextValid()) {
+      try {
+        chrome.runtime.sendMessage({
+          action: 'ADD_DOM_VIDEOS',
+          videos: found
+        }).catch(() => {});
+      } catch {
+        if (observer) observer.disconnect();
+      }
     }
   }
 
@@ -326,39 +344,49 @@
     }
   }
 
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (!msg) return false;
-    if (msg.action === 'RESCAN_DOM') {
-      scanFrameForVideos(true);
-      sendResponse({ ok: true });
-      return false;
+  if (isExtensionContextValid()) {
+    try {
+      chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+        if (!msg) return false;
+        if (msg.action === 'RESCAN_DOM') {
+          scanFrameForVideos(true);
+          sendResponse({ ok: true });
+          return false;
+        }
+        if (msg.action === 'HIGHLIGHT_VIDEO') {
+          highlightVideoOnPage(msg.url || '');
+          sendResponse({ ok: true });
+          return false;
+        }
+        if (msg.action === 'AUTO_TRIGGER_PLAY') {
+          const v = document.querySelector('video');
+          if (v && v.paused) {
+            v.muted = true;
+            v.play().then(() => {
+              setTimeout(() => v.pause(), 600);
+            }).catch(() => {});
+          }
+          scanFrameForVideos(true);
+          sendResponse({ ok: true });
+          return false;
+        }
+        return false;
+      });
+    } catch {
+      // Ignore invalidated context
     }
-    if (msg.action === 'HIGHLIGHT_VIDEO') {
-      highlightVideoOnPage(msg.url || '');
-      sendResponse({ ok: true });
-      return false;
-    }
-    if (msg.action === 'AUTO_TRIGGER_PLAY') {
-      const v = document.querySelector('video');
-      if (v && v.paused) {
-        v.muted = true;
-        v.play().then(() => {
-          setTimeout(() => v.pause(), 600);
-        }).catch(() => {});
-      }
-      scanFrameForVideos(true);
-      sendResponse({ ok: true });
-      return false;
-    }
-    return false;
-  });
+  }
 
   scanFrameForVideos(false);
   setTimeout(() => scanFrameForVideos(false), 1800);
   setTimeout(() => scanFrameForVideos(false), 4500);
 
   let debounceTimer = null;
-  const observer = new MutationObserver(() => {
+  observer = new MutationObserver(() => {
+    if (!isExtensionContextValid()) {
+      observer.disconnect();
+      return;
+    }
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       scanFrameForVideos(false);
