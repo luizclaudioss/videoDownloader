@@ -201,6 +201,33 @@
       });
     }
 
+    // 7.1. X / Twitter (x.com / twitter.com) — detecta vídeo do post aberto ou posts com vídeo na timeline
+    if (/(?:^|\.)(?:x\.com|twitter\.com)$/i.test(window.location.hostname)) {
+      if (/\/status\/\d+/i.test(currentUrl)) {
+        addCandidate({
+          url: currentUrl,
+          title: defaultTitle,
+          referer: currentUrl,
+          sourceType: 'dom-embed',
+          providerOverride: 'X / Twitter'
+        });
+      }
+      const articles = document.querySelectorAll('article');
+      articles.forEach((art) => {
+        if (!art.querySelector('video, [data-testid="videoPlayer"], [data-testid="videoComponent"]')) return;
+        const statusLink = art.querySelector('a[href*="/status/"]');
+        if (statusLink && statusLink.href) {
+          addCandidate({
+            url: statusLink.href,
+            title: defaultTitle,
+            referer: currentUrl,
+            sourceType: 'dom-embed',
+            providerOverride: 'X / Twitter'
+          });
+        }
+      });
+    }
+
     // 8. Vasculha Performance API para streams já carregados
     try {
       const resources = performance.getEntriesByType('resource') || [];

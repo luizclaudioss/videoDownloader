@@ -170,6 +170,12 @@ const PROVIDER_PATTERNS = [
     badgeColor: '#0066dc',
     regex: /dailymotion\.com\/embed\/video\/[a-zA-Z0-9]+/i,
     extractEmbedUrl: (url) => url
+  },
+  {
+    name: 'X / Twitter',
+    badgeColor: '#1d9bf0',
+    regex: /(?:x\.com|twitter\.com)\/[^\/]+\/status\/\d+|video\.twimg\.com/i,
+    extractEmbedUrl: (url) => url
   }
 ];
 
@@ -214,6 +220,8 @@ function isIgnoredNoiseUrl(url) {
 }
 
 function extractQualityHint(url) {
+  const dim = url.match(/\/(\d{3,4}x\d{3,4})(?:\/|$|\?)/i);
+  if (dim) return dim[1];
   const m = url.match(/(?:^|[\/_-])(2160p|1440p|1080p|720p|540p|480p|360p|240p|4k|hd)(?:[\/_.-]|$|\?)/i);
   if (m) return m[1].toUpperCase();
   return null;
@@ -438,6 +446,139 @@ async function extractWistiaDirectMp4(tabId, mediaId, referer) {
   }
 }
 
+const twitterTweetCache = new Map(); // tweetId -> resolved video items
+
+function extractTweetIdFromUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  const m = url.match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)/i);
+  return m ? m[1] : null;
+}
+
+async function resolveTwitterVideosByTweetId(tweetId) {
+  if (!tweetId) return [];
+  if (twitterTweetCache.has(tweetId)) {
+    return twitterTweetCache.get(tweetId);
+  }
+
+  const results = [];
+  const seenUrls = new Set();
+
+  // 1. Tenta via API de Syndication oficial do X/Twitter (retorna todas as variantes MP4 com vídeo + áudio)
+  try {
+    const synRes = await fetch(`https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&token=0`);
+    if (synRes.ok) {
+      const data = await synRes.json();
+      const author = (data.user && (data.user.screen_name || data.user.name)) || 'x_video';
+      const cleanText = (data.text || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim().slice(0, 70);
+      const baseTitle = cleanText ? `${author} - ${cleanText}` : `X_${author}_${tweetId}`;
+
+      const mediaList = Array.isArray(data.mediaDetails) ? data.mediaDetails : [];
+      mediaList.forEach((m, idx) => {
+        if (m && m.video_info && Array.isArray(m.video_info.variants)) {
+          const mp4Variants = m.video_info.variants
+            .filter((v) => v && v.url && (v.content_type === 'video/mp4' || /\.mp4(\?|$)/i.test(v.url)))
+            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+          if (mp4Variants.length > 0) {
+            const best = mp4Variants[0];
+            const cleanUrl = best.url.split('?')[0];
+            if (!seenUrls.has(cleanUrl)) {
+              seenUrls.add(cleanUrl);
+              results.push({
+                url: best.url,
+                title: mediaList.length > 1 ? `${baseTitle} (${idx + 1})` : baseTitle,
+                qualityHint: extractQualityHint(best.url) || 'HD MP4',
+                provider: 'X / Twitter MP4'
+              });
+            }
+          }
+        }
+      });
+
+      if (results.length === 0 && data.video && Array.isArray(data.video.variants)) {
+        const mp4Variants = data.video.variants
+          .filter((v) => v && v.src && (v.type === 'video/mp4' || /\.mp4(\?|$)/i.test(v.src)))
+          .reverse();
+        if (mp4Variants.length > 0) {
+          const best = mp4Variants[0];
+          const cleanUrl = best.src.split('?')[0];
+          if (!seenUrls.has(cleanUrl)) {
+            seenUrls.add(cleanUrl);
+            results.push({
+              url: best.src,
+              title: baseTitle,
+              qualityHint: extractQualityHint(best.src) || 'HD MP4',
+              provider: 'X / Twitter MP4'
+            });
+          }
+        }
+      }
+    }
+  } catch {
+    // Continua para o fallback
+  }
+
+  // 2. Fallback via api.vxtwitter.com (funciona inclusive para vídeos com restrição de idade/sensíveis)
+  if (results.length === 0) {
+    try {
+      const vxRes = await fetch(`https://api.vxtwitter.com/i/status/${tweetId}`);
+      if (vxRes.ok) {
+        const data = await vxRes.json();
+        const author = data.user_screen_name || data.user_name || 'x_video';
+        const cleanText = (data.text || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim().slice(0, 70);
+        const baseTitle = cleanText ? `${author} - ${cleanText}` : `X_${author}_${tweetId}`;
+
+        const extList = Array.isArray(data.media_extended) ? data.media_extended : [];
+        extList.forEach((m, idx) => {
+          if (m && m.url && (m.type === 'video' || m.type === 'gif' || /\.mp4(\?|$)/i.test(m.url))) {
+            const cleanUrl = m.url.split('?')[0];
+            if (!seenUrls.has(cleanUrl)) {
+              seenUrls.add(cleanUrl);
+              const qHint =
+                m.size && m.size.width && m.size.height
+                  ? `${m.size.width}x${m.size.height}`
+                  : extractQualityHint(m.url) || 'HD MP4';
+              results.push({
+                url: m.url,
+                title: extList.length > 1 ? `${baseTitle} (${idx + 1})` : baseTitle,
+                qualityHint: qHint,
+                provider: 'X / Twitter MP4'
+              });
+            }
+          }
+        });
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  if (results.length > 0) {
+    twitterTweetCache.set(tweetId, results);
+  }
+  return results;
+}
+
+async function extractTwitterDirectMp4(tabId, tweetId, referer) {
+  if (!tweetId) return [];
+  const videos = await resolveTwitterVideosByTweetId(tweetId);
+  if (tabId && tabId > 0) {
+    for (const v of videos) {
+      await registerDetectedVideo(tabId, {
+        url: v.url,
+        title: v.title,
+        referer: referer || `https://x.com/i/status/${tweetId}`,
+        pageUrl: referer || `https://x.com/i/status/${tweetId}`,
+        qualityHint: v.qualityHint,
+        providerOverride: v.provider,
+        contentType: 'video/mp4',
+        sourceType: 'network-verified'
+      });
+    }
+  }
+  return videos;
+}
+
 function getNormalizedKey(url) {
   try {
     const u = new URL(url);
@@ -508,6 +649,16 @@ async function removeDetectedVideo(tabId, url) {
 async function registerDetectedVideo(tabId, rawItem) {
   if (!tabId || tabId < 0 || !rawItem || !rawItem.url) return;
 
+  // Se o item for uma URL de post do X/Twitter, resolve o MP4 direto automaticamente
+  const tweetIdFromUrl =
+    extractTweetIdFromUrl(rawItem.url) ||
+    extractTweetIdFromUrl(rawItem.pageUrl) ||
+    extractTweetIdFromUrl(rawItem.referer);
+  if (tweetIdFromUrl && /(?:x\.com|twitter\.com)\//i.test(rawItem.url)) {
+    await extractTwitterDirectMp4(tabId, tweetIdFromUrl, rawItem.url);
+    return;
+  }
+
   const classification = classifyVideoUrl(
     rawItem.url,
     rawItem.contentType || '',
@@ -559,6 +710,17 @@ async function registerDetectedVideo(tabId, rawItem) {
 
   if (classification.wistiaMediaId) {
     extractWistiaDirectMp4(tabId, classification.wistiaMediaId, merged.referer);
+  }
+
+  if (tweetIdFromUrl) {
+    extractTwitterDirectMp4(tabId, tweetIdFromUrl, merged.referer);
+  } else if (/video\.twimg\.com/i.test(classification.url)) {
+    chrome.tabs.get(tabId, (tab) => {
+      if (!chrome.runtime.lastError && tab && tab.url) {
+        const tid = extractTweetIdFromUrl(tab.url);
+        if (tid) extractTwitterDirectMp4(tabId, tid, tab.url);
+      }
+    });
   }
 }
 
@@ -643,11 +805,16 @@ chrome.webRequest.onHeadersReceived.addListener(
   ['responseHeaders']
 );
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
     tabVideosCache.delete(tabId);
     chrome.storage.session.remove(`tab_${tabId}`).catch(() => {});
     updateBadge(tabId, 0);
+  }
+  const candidateUrl = changeInfo.url || (changeInfo.status === 'complete' && tab ? tab.url : '');
+  const tweetId = extractTweetIdFromUrl(candidateUrl);
+  if (tweetId) {
+    extractTwitterDirectMp4(tabId, tweetId, candidateUrl);
   }
 });
 
@@ -674,6 +841,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       }
       sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  if (message.action === 'RESOLVE_TWITTER_VIDEO') {
+    (async () => {
+      const tweetId = message.tweetId || extractTweetIdFromUrl(message.url);
+      if (!tweetId) {
+        sendResponse({ ok: false, videos: [] });
+        return;
+      }
+      const videos = await extractTwitterDirectMp4(message.tabId || null, tweetId, message.url || '');
+      sendResponse({ ok: videos.length > 0, videos });
     })();
     return true;
   }

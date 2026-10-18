@@ -39,6 +39,20 @@
     </div>
   </header>
 
+  <div class="quick-url-bar">
+    <input
+      id="customUrlInput"
+      type="text"
+      class="quick-url-input"
+      placeholder="Cole o link do vídeo (X/Twitter, MP4, M3U8, Vimeo, Wistia...)"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button id="btnDownloadCustomUrl" class="btn btn-primary quick-url-btn" title="Extrair e baixar vídeo em .MP4">
+      ⬇️ Baixar
+    </button>
+  </div>
+
   <nav class="tabs">
     <button class="tab active" data-filter="all">
       Todos <span id="countAll" class="tab-count">0</span>
@@ -51,6 +65,9 @@
     </button>
     <button class="tab" data-filter="direct">
       Diretos (.mp4) <span id="countDirect" class="tab-count">0</span>
+    </button>
+    <button class="tab" data-filter="synced" title="Vídeos sincronizados na sua Conta Google entre computadores">
+      ☁️ Sync <span id="countSynced" class="tab-count">0</span>
     </button>
   </nav>
 

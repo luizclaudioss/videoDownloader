@@ -1,7 +1,8 @@
-// popup.js - Lógica do painel do Video Radar (com download garantido em .mp4)
+// popup.js - Lógica do painel do Video Radar (com download garantido em .mp4 e Google Sync)
 
 let currentTab = null;
 let allVideos = [];
+let syncedVideos = [];
 let activeFilter = 'all';
 
 const videoListEl = document.getElementById('videoList');
@@ -12,6 +13,7 @@ const countAllEl = document.getElementById('countAll');
 const countEmbedEl = document.getElementById('countEmbed');
 const countStreamEl = document.getElementById('countStream');
 const countDirectEl = document.getElementById('countDirect');
+const countSyncedEl = document.getElementById('countSynced');
 
 function showToast(msg, duration = 2600) {
   toastEl.textContent = msg;
@@ -20,6 +22,72 @@ function showToast(msg, duration = 2600) {
   showToast._timer = setTimeout(() => {
     toastEl.classList.add('hidden');
   }, duration);
+}
+
+// Compacta os metadados do vídeo para caber na cota do chrome.storage.sync (8 KB por chave)
+function compactVideoForSync(item) {
+  return {
+    url: String(item.url || '').slice(0, 900),
+    title: String(item.title || 'Vídeo salvo').slice(0, 140),
+    provider: item.provider || 'Vídeo',
+    badgeColor: item.badgeColor || '#6366f1',
+    category: item.category || 'stream',
+    format: item.format || 'MP4',
+    qualityHint: item.qualityHint || '',
+    sizeBytes: item.sizeBytes || null,
+    referer: String(item.referer || item.pageUrl || '').slice(0, 400),
+    pageUrl: String(item.pageUrl || '').slice(0, 400),
+    sourceType: item.sourceType || 'sync',
+    savedAt: Date.now()
+  };
+}
+
+async function persistSyncedVideos(list) {
+  const trimmed = list.slice(0, 15);
+  while (trimmed.length > 1 && new Blob([JSON.stringify(trimmed)]).size > 7200) {
+    trimmed.pop();
+  }
+  syncedVideos = trimmed;
+  try {
+    await chrome.storage.sync.set({ syncedVideos: trimmed });
+  } catch {
+    // Fallback se a cota de sync estiver cheia
+  }
+}
+
+async function saveVideoToSync(item, silent = false) {
+  if (!item || !item.url) return;
+  const compact = compactVideoForSync(item);
+  const filtered = syncedVideos.filter((v) => v.url !== compact.url);
+  await persistSyncedVideos([compact, ...filtered]);
+  renderList();
+  if (!silent) {
+    showToast('☁️ Salvo na Conta Google (sincronizado entre PCs)!');
+  }
+}
+
+async function removeVideoFromSync(url) {
+  const next = syncedVideos.filter((v) => v.url !== url);
+  await persistSyncedVideos(next);
+  renderList();
+  showToast('Removido da sincronização.');
+}
+
+async function loadSyncedData() {
+  try {
+    const data = await chrome.storage.sync.get(['syncedVideos', 'radarPrefs']);
+    if (Array.isArray(data.syncedVideos)) {
+      syncedVideos = data.syncedVideos;
+    }
+    if (data.radarPrefs && data.radarPrefs.activeFilter) {
+      activeFilter = data.radarPrefs.activeFilter;
+      document.querySelectorAll('.tab').forEach((b) => {
+        b.classList.toggle('active', b.getAttribute('data-filter') === activeFilter);
+      });
+    }
+  } catch {
+    // Ignore sync errors
+  }
 }
 
 function formatBytes(bytes) {
@@ -158,6 +226,31 @@ async function tryExtractStreamFromEmbedHtml(embedUrl, referer) {
 async function handleDirectDownload(item) {
   const referer = item.referer || item.pageUrl || (currentTab ? currentTab.url : '');
 
+  // 0. Se for uma playlist .m3u8 do X/Twitter (onde vídeo e áudio são separados), resolve e baixa o .mp4 direto com áudio!
+  if (/video\.twimg\.com/i.test(item.url) && item.url.includes('.m3u8')) {
+    const existingMp4 = allVideos.find((v) => v.category === 'direct' && /video\.twimg\.com/i.test(v.url));
+    if (existingMp4) {
+      startBrowserMp4Download(existingMp4.url, existingMp4.title || item.title, referer);
+      return;
+    }
+    const candidateTweetUrl = item.pageUrl || item.referer || (currentTab ? currentTab.url : '');
+    const tweetMatch = candidateTweetUrl.match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)/i);
+    if (tweetMatch) {
+      showToast('Extraindo MP4 completo (vídeo + áudio) do X/Twitter...', 3000);
+      const res = await chrome.runtime.sendMessage({
+        action: 'RESOLVE_TWITTER_VIDEO',
+        tweetId: tweetMatch[1],
+        url: candidateTweetUrl,
+        tabId: currentTab ? currentTab.id : null
+      });
+      if (res && res.ok && Array.isArray(res.videos) && res.videos.length > 0) {
+        const chosen = res.videos[0];
+        startBrowserMp4Download(chosen.url, chosen.title || item.title, candidateTweetUrl);
+        return;
+      }
+    }
+  }
+
   // 1. Se for arquivo direto (.mp4, .webm, .bin do Wistia, etc.), baixa forçando .mp4 via background.js
   if (item.category === 'direct') {
     startBrowserMp4Download(item.url, item.title, referer);
@@ -226,28 +319,44 @@ function updateCounts() {
   countEmbedEl.textContent = embedCount;
   countStreamEl.textContent = streamCount;
   countDirectEl.textContent = directCount;
+  if (countSyncedEl) {
+    countSyncedEl.textContent = syncedVideos.length;
+  }
 }
 
 function renderList() {
   updateCounts();
   videoListEl.innerHTML = '';
 
-  const filtered = allVideos.filter((v) => {
-    if (activeFilter === 'all') return true;
-    return v.category === activeFilter;
-  });
+  const isSyncedTab = activeFilter === 'synced';
+  const filtered = isSyncedTab
+    ? syncedVideos
+    : allVideos.filter((v) => {
+        if (activeFilter === 'all') return true;
+        return v.category === activeFilter;
+      });
 
   if (filtered.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = `
-      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"></circle>
-        <polygon points="10 8 16 12 10 16 10 8"></polygon>
-      </svg>
-      <h3>Nenhum vídeo detectado neste filtro</h3>
-      <p>Dê <strong>Play</strong> no vídeo da página para interceptar streams (<code>.m3u8</code> / <code>.mp4</code>) ou clique no botão de atualizar no topo para re-escanear iframes.</p>
-    `;
+    if (isSyncedTab) {
+      empty.innerHTML = `
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+        </svg>
+        <h3>Nenhum vídeo salvo no Google Sync</h3>
+        <p>Clique em <strong>☁️ Sync</strong> em qualquer vídeo (ou baixe/copie um vídeo) para sincronizá-lo automaticamente entre seus computadores.</p>
+      `;
+    } else {
+      empty.innerHTML = `
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polygon points="10 8 16 12 10 16 10 8"></polygon>
+        </svg>
+        <h3>Nenhum vídeo detectado neste filtro</h3>
+        <p>Dê <strong>Play</strong> no vídeo da página para interceptar streams (<code>.m3u8</code> / <code>.mp4</code>) ou clique no botão de atualizar no topo para re-escanear iframes.</p>
+      `;
+    }
     videoListEl.appendChild(empty);
     return;
   }
@@ -257,12 +366,21 @@ function renderList() {
     card.className = 'video-card';
 
     const sizeLabel = formatBytes(item.sizeBytes);
+    const isAlreadySynced = syncedVideos.some((s) => s.url === item.url);
     let refererHost = '';
     try {
       if (item.referer) refererHost = new URL(item.referer).hostname;
     } catch {
       refererHost = '';
     }
+
+    const syncBtnHtml = isSyncedTab
+      ? `<button class="mini-btn btn-sync-toggle" title="Remover este vídeo da nuvem (Google Sync)">🗑️ Remover</button>`
+      : `<button class="mini-btn btn-sync-toggle ${isAlreadySynced ? 'synced-active' : ''}" title="${
+          isAlreadySynced
+            ? 'Já sincronizado na Conta Google (clique para remover)'
+            : 'Salvar na Conta Google para acessar em outro computador'
+        }">${isAlreadySynced ? '☁️ Salvo' : '☁️ Sync'}</button>`;
 
     card.innerHTML = `
       <div class="card-top">
@@ -273,7 +391,8 @@ function renderList() {
           ${sizeLabel ? `<span class="badge badge-format">${escapeHtml(sizeLabel)}</span>` : ''}
         </div>
         <div class="card-quick-icons">
-          <button class="mini-btn btn-highlight" title="Destacar este player na página">🎯 Localizar</button>
+          ${syncBtnHtml}
+          ${!isSyncedTab ? `<button class="mini-btn btn-highlight" title="Destacar este player na página">🎯 Localizar</button>` : ''}
           <button class="mini-btn btn-open" title="Abrir endereço em nova aba">↗</button>
         </div>
       </div>
@@ -285,7 +404,13 @@ function renderList() {
       <div class="url-box" title="Clique para selecionar a URL completa">${escapeHtml(item.url)}</div>
 
       <div class="meta-row">
-        <span>Origem: <strong>${item.sourceType === 'network' ? 'Tráfego de Rede' : 'Iframe / DOM'}</strong></span>
+        <span>Origem: <strong>${
+          isSyncedTab
+            ? '☁️ Conta Google (Sync)'
+            : item.sourceType === 'network' || item.sourceType === 'network-verified'
+            ? 'Tráfego de Rede'
+            : 'Iframe / DOM'
+        }</strong></span>
         ${refererHost ? `<span>Referer: <strong>${escapeHtml(refererHost)}</strong></span>` : ''}
       </div>
 
@@ -297,12 +422,17 @@ function renderList() {
       </div>
     `;
 
-    card.querySelector('.btn-download').addEventListener('click', () => handleDirectDownload(item));
+    card.querySelector('.btn-download').addEventListener('click', () => {
+      saveVideoToSync(item, true);
+      handleDirectDownload(item);
+    });
     card.querySelector('.btn-ytdlp').addEventListener('click', () => {
-      copyText(buildYtDlpCommand(item), 'Comando yt-dlp copiado!');
+      saveVideoToSync(item, true);
+      copyText(buildYtDlpCommand(item), 'Comando yt-dlp copiado e salvo no Sync!');
     });
     card.querySelector('.btn-ffmpeg').addEventListener('click', () => {
-      copyText(buildFfmpegCommand(item), 'Comando ffmpeg copiado!');
+      saveVideoToSync(item, true);
+      copyText(buildFfmpegCommand(item), 'Comando ffmpeg copiado e salvo no Sync!');
     });
     card.querySelector('.btn-copy-url').addEventListener('click', () => {
       copyText(item.url, 'URL do vídeo copiada!');
@@ -310,12 +440,23 @@ function renderList() {
     card.querySelector('.btn-open').addEventListener('click', () => {
       chrome.tabs.create({ url: item.url });
     });
-    card.querySelector('.btn-highlight').addEventListener('click', () => {
-      if (currentTab && currentTab.id) {
-        chrome.tabs.sendMessage(currentTab.id, { action: 'HIGHLIGHT_VIDEO', url: item.url }).catch(() => {});
-        showToast('Vídeo destacado na página!');
+    card.querySelector('.btn-sync-toggle').addEventListener('click', () => {
+      if (isSyncedTab || isAlreadySynced) {
+        removeVideoFromSync(item.url);
+      } else {
+        saveVideoToSync(item, false);
       }
     });
+
+    const highlightBtn = card.querySelector('.btn-highlight');
+    if (highlightBtn) {
+      highlightBtn.addEventListener('click', () => {
+        if (currentTab && currentTab.id) {
+          chrome.tabs.sendMessage(currentTab.id, { action: 'HIGHLIGHT_VIDEO', url: item.url }).catch(() => {});
+          showToast('Vídeo destacado na página!');
+        }
+      });
+    }
 
     videoListEl.appendChild(card);
   });
@@ -330,6 +471,8 @@ function escapeHtml(str) {
 }
 
 async function loadTabVideos() {
+  await loadSyncedData();
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
   currentTab = tab;
@@ -343,21 +486,182 @@ async function loadTabVideos() {
 
   chrome.tabs.sendMessage(tab.id, { action: 'RESCAN_DOM' }).catch(() => {});
 
+  // Se a aba atual já for um post de vídeo do X/Twitter, solicita extração imediata do MP4 direto
+  const tabTweetMatch = (tab.url || '').match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)/i);
+  if (tabTweetMatch) {
+    chrome.runtime.sendMessage(
+      {
+        action: 'RESOLVE_TWITTER_VIDEO',
+        tweetId: tabTweetMatch[1],
+        url: tab.url,
+        tabId: tab.id
+      },
+      () => {
+        chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
+          allVideos = (res && Array.isArray(res.videos)) ? res.videos : [];
+          renderList();
+        });
+      }
+    );
+  }
+
   setTimeout(() => {
     chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
       allVideos = (res && Array.isArray(res.videos)) ? res.videos : [];
+      if (activeFilter === 'synced' && syncedVideos.length === 0 && allVideos.length > 0) {
+        activeFilter = 'all';
+        document.querySelectorAll('.tab').forEach((b) => {
+          b.classList.toggle('active', b.getAttribute('data-filter') === 'all');
+        });
+      }
       renderList();
     });
   }, 150);
 }
+
+async function handleCustomUrlDownload() {
+  const inputEl = document.getElementById('customUrlInput');
+  const btnEl = document.getElementById('btnDownloadCustomUrl');
+  const rawUrl = (inputEl ? inputEl.value : '').trim();
+
+  if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+    showToast('Cole um link válido começando com http:// ou https://');
+    if (inputEl) inputEl.focus();
+    return;
+  }
+
+  const defaultReferer = currentTab && currentTab.url && /^https?:\/\//i.test(currentTab.url) ? currentTab.url : rawUrl;
+  const fallbackTitle = (currentTab && currentTab.title) || 'video_baixado';
+
+  if (btnEl) btnEl.disabled = true;
+
+  try {
+    // 1. Link de post/vídeo do X / Twitter (ex: https://x.com/user/status/123456789/video/1)
+    const tweetMatch = rawUrl.match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)(?:\/video\/(\d+))?/i);
+    if (tweetMatch) {
+      const tweetId = tweetMatch[1];
+      const videoIndex = tweetMatch[2] ? Math.max(0, parseInt(tweetMatch[2], 10) - 1) : 0;
+      showToast('Extraindo vídeo MP4 do X / Twitter...', 3500);
+
+      const res = await chrome.runtime.sendMessage({
+        action: 'RESOLVE_TWITTER_VIDEO',
+        tweetId,
+        url: rawUrl,
+        tabId: currentTab ? currentTab.id : null
+      });
+
+      if (res && res.ok && Array.isArray(res.videos) && res.videos.length > 0) {
+        const chosen = res.videos[videoIndex] || res.videos[0];
+        await saveVideoToSync(
+          {
+            url: chosen.url,
+            title: chosen.title,
+            provider: chosen.provider || 'X / Twitter MP4',
+            badgeColor: '#1d9bf0',
+            category: 'direct',
+            format: 'Arquivo MP4',
+            qualityHint: chosen.qualityHint || 'HD MP4',
+            referer: rawUrl,
+            pageUrl: rawUrl
+          },
+          true
+        );
+        if (currentTab && currentTab.id) {
+          chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: currentTab.id }, (tabRes) => {
+            allVideos = (tabRes && Array.isArray(tabRes.videos)) ? tabRes.videos : allVideos;
+            renderList();
+          });
+        }
+        inputEl.value = '';
+        startBrowserMp4Download(chosen.url, chosen.title, rawUrl);
+      } else {
+        showToast('Não foi possível extrair o vídeo deste link do X.', 3500);
+      }
+      return;
+    }
+
+    // 2. Link de Stream HLS (.m3u8)
+    if (/\.m3u8(\?|$)/i.test(rawUrl)) {
+      await saveVideoToSync(
+        {
+          url: rawUrl,
+          title: fallbackTitle,
+          provider: 'Stream HLS',
+          badgeColor: '#10b981',
+          category: 'stream',
+          format: 'HLS (.m3u8 ➔ .mp4)',
+          referer: defaultReferer,
+          pageUrl: rawUrl
+        },
+        true
+      );
+      inputEl.value = '';
+      openHlsDownloader(rawUrl, fallbackTitle, defaultReferer);
+      return;
+    }
+
+    // 3. Link direto de vídeo (.mp4, .webm, .mov, .m4v, .mkv)
+    if (/\.(mp4|webm|mov|m4v|mkv)(\?|$)/i.test(rawUrl)) {
+      await saveVideoToSync(
+        {
+          url: rawUrl,
+          title: fallbackTitle,
+          provider: 'Vídeo Direto',
+          badgeColor: '#3b82f6',
+          category: 'direct',
+          format: 'Arquivo MP4',
+          referer: defaultReferer,
+          pageUrl: rawUrl
+        },
+        true
+      );
+      inputEl.value = '';
+      startBrowserMp4Download(rawUrl, fallbackTitle, defaultReferer);
+      return;
+    }
+
+    // 4. Outros links (Vimeo, Panda, Wistia, Bunny, páginas com vídeo embutido)
+    showToast('Analisando link para extrair o vídeo...', 3000);
+    const extracted = await tryExtractStreamFromEmbedHtml(rawUrl, defaultReferer);
+    if (extracted) {
+      inputEl.value = '';
+      if (extracted.type === 'direct') {
+        startBrowserMp4Download(extracted.url, fallbackTitle, rawUrl);
+      } else {
+        openHlsDownloader(extracted.url, fallbackTitle, rawUrl);
+      }
+      return;
+    }
+
+    showToast('Não foi encontrado link direto (.mp4/.m3u8) nesse endereço.', 3500);
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+document.getElementById('btnDownloadCustomUrl').addEventListener('click', handleCustomUrlDownload);
+document.getElementById('customUrlInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    handleCustomUrlDownload();
+  }
+});
 
 document.querySelectorAll('.tab').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     activeFilter = btn.getAttribute('data-filter') || 'all';
+    chrome.storage.sync.set({ radarPrefs: { activeFilter } }).catch(() => {});
     renderList();
   });
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'sync' && changes.syncedVideos) {
+    syncedVideos = Array.isArray(changes.syncedVideos.newValue) ? changes.syncedVideos.newValue : [];
+    renderList();
+  }
 });
 
 document.getElementById('btnRescan').addEventListener('click', async () => {
@@ -375,7 +679,13 @@ document.getElementById('btnRescan').addEventListener('click', async () => {
   showToast('Página e iframes re-escaneados!');
 });
 
-document.getElementById('btnClear').addEventListener('click', () => {
+document.getElementById('btnClear').addEventListener('click', async () => {
+  if (activeFilter === 'synced') {
+    await persistSyncedVideos([]);
+    renderList();
+    showToast('Lista sincronizada limpa!');
+    return;
+  }
   if (!currentTab) return;
   chrome.runtime.sendMessage({ action: 'CLEAR_TAB_VIDEOS', tabId: currentTab.id }, () => {
     allVideos = [];
