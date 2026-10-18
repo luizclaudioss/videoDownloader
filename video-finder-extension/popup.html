@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video Radar</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="23 7 16 12 23 17 23 7"></polygon>
+          <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+        </svg>
+      </div>
+      <div>
+        <h1>Video Radar</h1>
+        <p id="pageHost" class="subtitle">Analisando aba atual...</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button id="btnRescan" class="icon-btn" title="Re-escanear página e iframes">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+      </button>
+      <button id="btnClear" class="icon-btn" title="Limpar lista desta aba">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+          <path d="M10 11v6"></path>
+          <path d="M14 11v6"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-filter="all">
+      Todos <span id="countAll" class="tab-count">0</span>
+    </button>
+    <button class="tab" data-filter="embed">
+      Players / Iframes <span id="countEmbed" class="tab-count">0</span>
+    </button>
+    <button class="tab" data-filter="stream">
+      Streams (.m3u8) <span id="countStream" class="tab-count">0</span>
+    </button>
+    <button class="tab" data-filter="direct">
+      Diretos (.mp4) <span id="countDirect" class="tab-count">0</span>
+    </button>
+  </nav>
+
+  <main id="videoList" class="video-list">
+    <!-- Preenchido via popup.js -->
+  </main>
+
+  <div id="toast" class="toast hidden">Copiado para a área de transferência!</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
