@@ -42,9 +42,44 @@ async function ensureRefererForUrl(targetUrl) {
   }
 }
 
+function startDirectDownloadFromHlsPage(url, title) {
+  const cleanName = (title || 'video_capturado')
+    .replace(/\.(mp4|ts|m3u8)$/i, '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .trim() || 'video_capturado';
+  const finalFilename = `${cleanName}.mp4`;
+
+  chrome.runtime.sendMessage(
+    {
+      action: 'START_DIRECT_DOWNLOAD',
+      url,
+      filename: finalFilename,
+      referer: refererUrl || ''
+    },
+    (res) => {
+      if (!res || !res.ok) {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = finalFilename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      statusText.textContent = `✅ Download direto iniciado! Salvo como "${finalFilename}".`;
+      progressFill.style.width = '100%';
+    }
+  );
+}
+
 async function inspectM3u8(url) {
   if (!url) {
     statusText.textContent = 'URL inválida.';
+    return;
+  }
+  // Se for arquivo MP4 direto progressivo
+  if (/\.(mp4|webm|mov|m4v)(\?|$)/i.test(url)) {
+    statusText.textContent = 'Arquivo MP4 direto detectado! Iniciando download...';
+    startDirectDownloadFromHlsPage(url, titleInput.value);
     return;
   }
   try {
@@ -52,6 +87,14 @@ async function inspectM3u8(url) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
+
+    // Se o arquivo não começar com #EXTM3U (ex: arquivo binário .mp4), baixa diretamente
+    if (!/#EXTM3U/i.test(text.slice(0, 500))) {
+      statusText.textContent = 'Arquivo de vídeo direto identificado! Baixando...';
+      startDirectDownloadFromHlsPage(url, titleInput.value);
+      return;
+    }
+
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
     const variants = [];
@@ -255,6 +298,13 @@ async function downloadAndConvertToMp4() {
     const res = await fetch(selectedPlaylistUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
+
+    if (!/#EXTM3U/i.test(text.slice(0, 500))) {
+      statusText.textContent = 'Arquivo de vídeo direto identificado! Iniciando download nativo...';
+      startDirectDownloadFromHlsPage(selectedPlaylistUrl, titleInput.value);
+      return;
+    }
+
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
     let mediaSequence = 0;
@@ -291,6 +341,7 @@ async function downloadAndConvertToMp4() {
           });
         }
       } else if (!line.startsWith('#')) {
+        if (line.length > 2000) continue;
         segmentTasks.push({
           url: resolveUrl(line, selectedPlaylistUrl),
           keyInfo: currentKeyInfo ? { ...currentKeyInfo } : null,

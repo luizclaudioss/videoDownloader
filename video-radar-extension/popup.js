@@ -1,21 +1,46 @@
-// popup.js - Lógica do painel do Video Radar (com download garantido em .mp4 e Google Sync)
+// popup.js - Lógica visual e funcional do Video Radar
+// Design idêntico ao Video DownloadHelper com suporte a thumbnails, resoluções, HLS, MP4 e Google Sync.
 
 let currentTab = null;
 let allVideos = [];
 let syncedVideos = [];
-let activeFilter = 'all';
+let activeFilter = 'all'; // 'all' ou 'synced'
+let currentEditingItem = null;
+let activeDropdownEl = null;
 
+// Elementos DOM principais
 const videoListEl = document.getElementById('videoList');
 const pageHostEl = document.getElementById('pageHost');
 const toastEl = document.getElementById('toast');
 
-const countAllEl = document.getElementById('countAll');
-const countEmbedEl = document.getElementById('countEmbed');
-const countStreamEl = document.getElementById('countStream');
-const countDirectEl = document.getElementById('countDirect');
-const countSyncedEl = document.getElementById('countSynced');
+const btnToggleUrlInput = document.getElementById('btnToggleUrlInput');
+const quickUrlDrawer = document.getElementById('quickUrlDrawer');
+const customUrlInput = document.getElementById('customUrlInput');
+const btnDownloadCustomUrl = document.getElementById('btnDownloadCustomUrl');
+const btnRescan = document.getElementById('btnRescan');
+
+// Barra inferior (Footer)
+const btnFooterSettings = document.getElementById('btnFooterSettings');
+const btnNoVideoHelp = document.getElementById('btnNoVideoHelp');
+const btnFooterSync = document.getElementById('btnFooterSync');
+const btnOpenDownloadsFolder = document.getElementById('btnOpenDownloadsFolder');
+const btnClearAll = document.getElementById('btnClearAll');
+const btnFooterHelp = document.getElementById('btnFooterHelp');
+const btnOpenInTab = document.getElementById('btnOpenInTab');
+
+// Modais
+const renameModal = document.getElementById('renameModal');
+const renameInput = document.getElementById('renameInput');
+const btnRenameClose = document.getElementById('btnRenameClose');
+const btnRenameCancel = document.getElementById('btnRenameCancel');
+const btnRenameSave = document.getElementById('btnRenameSave');
+
+const helpModal = document.getElementById('helpModal');
+const btnHelpClose = document.getElementById('btnHelpClose');
+const btnHelpActionRescan = document.getElementById('btnHelpActionRescan');
 
 function showToast(msg, duration = 2600) {
+  if (!toastEl) return;
   toastEl.textContent = msg;
   toastEl.classList.remove('hidden');
   clearTimeout(showToast._timer);
@@ -24,15 +49,56 @@ function showToast(msg, duration = 2600) {
   }, duration);
 }
 
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function sanitizeFilename(rawTitle) {
+  const base = (rawTitle || 'video_capturado')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 90);
+  return base || 'video_capturado';
+}
+
+function formatBytes(bytes) {
+  if (!bytes || isNaN(bytes)) return null;
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1) return `${mb.toFixed(1)} MB`;
+  const kb = bytes / 1024;
+  return `${kb.toFixed(0)} KB`;
+}
+
+function getPlatformIcon(provider) {
+  const p = (provider || '').toLowerCase();
+  if (p.includes('twitter') || p.includes('x /') || p === 'x') return '𝕏';
+  if (p.includes('youtube')) return '▶';
+  if (p.includes('vimeo')) return 'Ⓥ';
+  if (p.includes('wistia')) return 'W';
+  if (p.includes('panda')) return '🐼';
+  if (p.includes('spalla')) return '⚡';
+  if (p.includes('hotmart')) return '🔥';
+  if (p.includes('loom')) return 'L';
+  if (p.includes('vidyard')) return 'V';
+  return '🎬';
+}
+
 // Compacta os metadados do vídeo para caber na cota do chrome.storage.sync (8 KB por chave)
 function compactVideoForSync(item) {
   return {
+    key: item.key || `sync_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     url: String(item.url || '').slice(0, 900),
     title: String(item.title || 'Vídeo salvo').slice(0, 140),
     provider: item.provider || 'Vídeo',
-    badgeColor: item.badgeColor || '#6366f1',
+    badgeColor: item.badgeColor || '#0284c7',
     category: item.category || 'stream',
     format: item.format || 'MP4',
+    streamType: item.streamType || (item.url && item.url.includes('.m3u8') ? 'HLS' : 'MP4'),
     qualityHint: item.qualityHint || '',
     sizeBytes: item.sizeBytes || null,
     thumbnailUrl: String(item.thumbnailUrl || '').slice(0, 300),
@@ -44,18 +110,8 @@ function compactVideoForSync(item) {
   };
 }
 
-function getPlatformIcon(provider) {
-  const p = (provider || '').toLowerCase();
-  if (p.includes('twitter') || p.includes('x /')) return '𝕏';
-  if (p.includes('youtube')) return '▶';
-  if (p.includes('vimeo')) return 'Ⓥ';
-  if (p.includes('wistia')) return 'W';
-  if (p.includes('panda')) return '🐼';
-  return '🎬';
-}
-
 async function persistSyncedVideos(list) {
-  const trimmed = list.slice(0, 15);
+  const trimmed = list.slice(0, 20);
   while (trimmed.length > 1 && new Blob([JSON.stringify(trimmed)]).size > 7200) {
     trimmed.pop();
   }
@@ -74,7 +130,7 @@ async function saveVideoToSync(item, silent = false) {
   await persistSyncedVideos([compact, ...filtered]);
   renderList();
   if (!silent) {
-    showToast('☁️ Salvo na Conta Google (sincronizado entre PCs)!');
+    showToast('☁️ Salvo na Conta Google (sincronizado)!');
   }
 }
 
@@ -91,40 +147,18 @@ async function loadSyncedData() {
     if (Array.isArray(data.syncedVideos)) {
       syncedVideos = data.syncedVideos;
     }
-    if (data.radarPrefs && data.radarPrefs.activeFilter) {
-      activeFilter = data.radarPrefs.activeFilter;
-      document.querySelectorAll('.tab').forEach((b) => {
-        b.classList.toggle('active', b.getAttribute('data-filter') === activeFilter);
-      });
-    }
   } catch {
     // Ignore sync errors
   }
 }
 
-function formatBytes(bytes) {
-  if (!bytes || isNaN(bytes)) return null;
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1) return `${mb.toFixed(1)} MB`;
-  const kb = bytes / 1024;
-  return `${kb.toFixed(0)} KB`;
-}
-
-function sanitizeFilename(rawTitle) {
-  const base = (rawTitle || 'video_capturado')
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80);
-  return base || 'video_capturado';
-}
-
 function buildYtDlpCommand(item) {
   const filename = sanitizeFilename(item.title);
   const ref = item.referer || item.pageUrl || '';
+  const targetUrl = item.selectedVariantUrl || item.url;
 
-  if (/youtube\.com|youtu\.be/i.test(item.url)) {
-    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -o "${filename}.%(ext)s" "${item.url}"`;
+  if (/youtube\.com|youtu\.be/i.test(targetUrl)) {
+    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -o "${filename}.%(ext)s" "${targetUrl}"`;
   }
 
   const parts = ['yt-dlp'];
@@ -134,7 +168,7 @@ function buildYtDlpCommand(item) {
   parts.push('-N 8');
   parts.push('--merge-output-format mp4');
   parts.push(`-o "${filename}.%(ext)s"`);
-  parts.push(`"${item.url}"`);
+  parts.push(`"${targetUrl}"`);
 
   return parts.join(' ');
 }
@@ -142,12 +176,13 @@ function buildYtDlpCommand(item) {
 function buildFfmpegCommand(item) {
   const filename = sanitizeFilename(item.title);
   const ref = item.referer || item.pageUrl || '';
+  const targetUrl = item.selectedVariantUrl || item.url;
   const parts = ['ffmpeg'];
 
   if (ref && ref.startsWith('http')) {
     parts.push(`-headers "Referer: ${ref.replace(/"/g, '\\"')}\\r\\n"`);
   }
-  parts.push(`-i "${item.url}"`);
+  parts.push(`-i "${targetUrl}"`);
   parts.push('-c copy -bsf:a aac_adtstoasc');
   parts.push(`"${filename}.mp4"`);
 
@@ -157,7 +192,7 @@ function buildFfmpegCommand(item) {
 async function copyText(text, feedbackMsg) {
   try {
     await navigator.clipboard.writeText(text);
-    showToast(feedbackMsg || 'Copiado!');
+    showToast(feedbackMsg || 'Copiado para a área de transferência!');
   } catch {
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -165,7 +200,7 @@ async function copyText(text, feedbackMsg) {
     ta.select();
     document.execCommand('copy');
     ta.remove();
-    showToast(feedbackMsg || 'Copiado!');
+    showToast(feedbackMsg || 'Copiado para a área de transferência!');
   }
 }
 
@@ -179,7 +214,7 @@ function openHlsDownloader(url, title, referer) {
 
 function startBrowserMp4Download(url, title, referer) {
   const filename = `${sanitizeFilename(title)}.mp4`;
-  showToast(`Verificando e iniciando download: ${filename}...`);
+  showToast(`Iniciando download: ${filename}...`);
   chrome.runtime.sendMessage(
     {
       action: 'START_DIRECT_DOWNLOAD',
@@ -192,15 +227,15 @@ function startBrowserMp4Download(url, title, referer) {
       if (res && res.ok) {
         showToast(`✅ Baixando "${res.filename}"!`);
       } else if (res && res.deadUrl) {
-        // Se o MP4 direto estava desativado/404 no servidor, usa automaticamente o stream HLS (.m3u8) da aba!
+        // Se o MP4 direto não estava disponível, tenta fallback HLS
         allVideos = allVideos.filter((v) => v.url !== url);
         renderList();
         const fallbackStream = allVideos.find((v) => v.category === 'stream' && v.url.includes('.m3u8'));
         if (fallbackStream) {
-          showToast('MP4 direto desativado no servidor. Baixando via Stream HLS (.m3u8 ➔ .mp4)...', 3500);
+          showToast('MP4 direto indisponível. Baixando via Stream HLS (.m3u8 ➔ .mp4)...', 3500);
           openHlsDownloader(fallbackStream.url, title || fallbackStream.title, fallbackStream.referer || referer);
         } else {
-          showToast('Esse link direto não está disponível no servidor. Use a opção de Stream (.m3u8).', 3500);
+          showToast('Esse link direto expirou no servidor. Use a opção de Stream (.m3u8).', 3500);
         }
       } else {
         showToast('Erro ao iniciar download direto.');
@@ -209,7 +244,7 @@ function startBrowserMp4Download(url, title, referer) {
   );
 }
 
-// Tenta extrair .mp4 ou .m3u8 do código-fonte HTML de um player embutido (Vimeo, Panda, Bunny, etc.)
+// Tenta extrair .mp4 ou .m3u8 do código-fonte HTML de um player embutido
 async function tryExtractStreamFromEmbedHtml(embedUrl, referer) {
   try {
     await chrome.runtime.sendMessage({
@@ -221,14 +256,12 @@ async function tryExtractStreamFromEmbedHtml(embedUrl, referer) {
     if (!res.ok) return null;
     const html = (await res.text()).replace(/\\\//g, '/').replace(/\\u0026/g, '&');
 
-    // 1. Procura MP4 progressivo no HTML do player
     const mp4Matches = html.match(/https?:\/\/[^\s"'<>\\]+\.mp4(?:\?[^\s"'<>\\]*)?/gi);
     if (mp4Matches) {
       const validMp4 = mp4Matches.find((u) => !/\/init\.mp4|\/seg-|\/segment/i.test(u));
       if (validMp4) return { type: 'direct', url: validMp4 };
     }
 
-    // 2. Procura playlist .m3u8 no HTML do player
     const m3u8Matches = html.match(/https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?/gi);
     if (m3u8Matches && m3u8Matches.length > 0) {
       return { type: 'stream', url: m3u8Matches[0] };
@@ -239,355 +272,557 @@ async function tryExtractStreamFromEmbedHtml(embedUrl, referer) {
   return null;
 }
 
-async function handleDirectDownload(item) {
-  const referer = item.referer || item.pageUrl || (currentTab ? currentTab.url : '');
+// Verifica se um vídeo/URL deve ser tratado como stream HLS (.m3u8) ou como arquivo direto (.mp4)
+function isHlsStream(item, targetUrl) {
+  const url = targetUrl || (item && (item.selectedVariantUrl || item.url)) || '';
+  // Se for explicitamente um arquivo de vídeo progressivo (.mp4, .webm, .mov), NUNCA é HLS!
+  if (/\.(mp4|webm|mov|m4v)(\?|$)/i.test(url)) return false;
+  // Se contiver .m3u8 na URL
+  if (/\.m3u8(\?|$)/i.test(url)) return true;
+  // Se tiver variantes mapeadas, confere a variante ativa
+  if (item && Array.isArray(item.variants)) {
+    const matched = item.variants.find((v) => v.url === url);
+    if (matched && matched.kind === 'mp4') return false;
+    if (matched && matched.kind === 'hls') return true;
+  }
+  if (item && item.category === 'direct') return false;
+  if (item && (item.streamType === 'HLS' || item.category === 'stream')) return true;
+  return false;
+}
 
-  // 0. Se for YouTube (usa yt-dlp com resolução total + abre downloader web)
-  if (/youtube\.com|youtu\.be/i.test(item.url)) {
+async function handleDirectDownload(item) {
+  const targetUrl = item.selectedVariantUrl || item.url;
+  const referer = item.referer || item.pageUrl || (currentTab ? currentTab.url : '');
+  const title = item.title || 'video_capturado';
+
+  // 1. YouTube
+  if (/youtube\.com|youtu\.be/i.test(targetUrl) || (item.provider && item.provider.toLowerCase().includes('youtube'))) {
     const cmd = buildYtDlpCommand(item);
     copyText(cmd, 'Comando yt-dlp copiado! Use no terminal para baixar em 1080p/4K com áudio.');
-    showToast('YouTube: comando yt-dlp copiado! Abrindo opções de download direto...', 4000);
-    chrome.tabs.create({ url: `https://cobalt.tools/` });
+    showToast('YouTube: comando yt-dlp (1080p/4K) copiado! Abrindo opções web...', 4000);
+    chrome.tabs.create({ url: 'https://cobalt.tools/' });
     return;
   }
 
-  // 0.1 Se for uma playlist .m3u8 do X/Twitter (onde vídeo e áudio são separados), resolve e baixa o .mp4 direto com áudio!
-  if (/video\.twimg\.com/i.test(item.url) && item.url.includes('.m3u8')) {
-    const existingMp4 = allVideos.find((v) => v.category === 'direct' && /video\.twimg\.com/i.test(v.url));
-    if (existingMp4) {
-      startBrowserMp4Download(existingMp4.url, existingMp4.title || item.title, referer);
-      return;
-    }
-    const candidateTweetUrl = item.pageUrl || item.referer || (currentTab ? currentTab.url : '');
-    const tweetMatch = candidateTweetUrl.match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)/i);
-    if (tweetMatch) {
-      showToast('Extraindo MP4 completo (vídeo + áudio) do X/Twitter...', 3000);
-      const res = await chrome.runtime.sendMessage({
-        action: 'RESOLVE_TWITTER_VIDEO',
-        tweetId: tweetMatch[1],
-        url: candidateTweetUrl,
-        tabId: currentTab ? currentTab.id : null
-      });
-      if (res && res.ok && Array.isArray(res.videos) && res.videos.length > 0) {
-        const chosen = res.videos[0];
-        startBrowserMp4Download(chosen.url, chosen.title || item.title, candidateTweetUrl);
-        return;
-      }
-    }
-  }
-
-  // 1. Se for arquivo direto (.mp4, .webm, .bin do Wistia, etc.), baixa forçando .mp4 via background.js
-  if (item.category === 'direct') {
-    startBrowserMp4Download(item.url, item.title, referer);
+  // 2. Arquivo Direto (.mp4, .webm, .mov, etc.) - Baixa direto no navegador (prioridade máxima para MP4s)
+  if (/\.(mp4|webm|mov|m4v)(\?|$)/i.test(targetUrl) || item.category === 'direct' || !isHlsStream(item, targetUrl)) {
+    startBrowserMp4Download(targetUrl, title, referer);
     return;
   }
 
-  // 2. Se for Stream HLS (.m3u8), abre nosso conversor/baixador integrado que gera .mp4 real
-  if (item.url.includes('.m3u8') || item.format.includes('.m3u8')) {
-    openHlsDownloader(item.url, item.title, referer);
+  // 3. Stream HLS (.m3u8) - Abre o conversor integrado HLS
+  const isHls = isHlsStream(item, targetUrl);
+  if (isHls) {
+    openHlsDownloader(targetUrl, title, referer);
     return;
   }
 
-  // 3. Se o usuário clicou em "Baixar MP4" num card de Player Embutido (Iframe de Vimeo, Panda, Wistia, etc.)
-  // Primeiro verifica se já temos um arquivo .mp4 ou stream .m3u8 capturado nesta mesma aba!
-  const bestDirect = allVideos.find((v) => v.category === 'direct');
+  // 4. Se for player embutido (iframe), verifica se já temos stream capturado
+  const bestDirect = allVideos.find((v) => v.category === 'direct' && v.url !== item.url);
   if (bestDirect) {
-    startBrowserMp4Download(bestDirect.url, item.title || bestDirect.title, bestDirect.referer || referer);
+    startBrowserMp4Download(bestDirect.url, title || bestDirect.title, bestDirect.referer || referer);
     return;
   }
 
   const bestStream = allVideos.find((v) => v.category === 'stream' && v.url.includes('.m3u8'));
   if (bestStream) {
-    openHlsDownloader(bestStream.url, item.title || bestStream.title, bestStream.referer || referer);
+    openHlsDownloader(bestStream.url, title || bestStream.title, bestStream.referer || referer);
     return;
   }
 
-  // Se ainda não havia stream capturado, tenta extrair do HTML do iframe ou acionar o player automaticamente
+  // Tenta extrair do HTML do player
   showToast('Extraindo stream de vídeo do player embutido...', 3500);
   const extracted = await tryExtractStreamFromEmbedHtml(item.url, referer);
   if (extracted) {
     if (extracted.type === 'direct') {
-      startBrowserMp4Download(extracted.url, item.title, item.url);
+      startBrowserMp4Download(extracted.url, title, item.url);
     } else {
-      openHlsDownloader(extracted.url, item.title, item.url);
+      openHlsDownloader(extracted.url, title, item.url);
     }
     return;
   }
 
-  // Pede para o content script dar um rápido Play no vídeo da página para forçar a requisição de rede
+  // Aciona rápido play no player para forçar a requisição
   if (currentTab && currentTab.id) {
     chrome.tabs.sendMessage(currentTab.id, { action: 'AUTO_TRIGGER_PLAY' }).catch(() => {});
     setTimeout(() => {
       chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: currentTab.id }, (res) => {
-        allVideos = (res && Array.isArray(res.videos)) ? res.videos : [];
+        allVideos = res && Array.isArray(res.videos) ? res.videos : [];
         renderList();
         const newDirect = allVideos.find((v) => v.category === 'direct');
         const newStream = allVideos.find((v) => v.category === 'stream' && v.url.includes('.m3u8'));
         if (newDirect) {
-          startBrowserMp4Download(newDirect.url, item.title || newDirect.title, newDirect.referer || referer);
+          startBrowserMp4Download(newDirect.url, title || newDirect.title, newDirect.referer || referer);
         } else if (newStream) {
-          openHlsDownloader(newStream.url, item.title || newStream.title, newStream.referer || referer);
+          openHlsDownloader(newStream.url, title || newStream.title, newStream.referer || referer);
         } else {
-          showToast('Dê Play no vídeo da página por 2 segundos e clique em Baixar MP4 novamente!', 4000);
+          showToast('Dê Play no vídeo da página por 2 segundos e clique em Baixar novamente!', 4000);
         }
       });
     }, 1200);
   }
 }
 
-function updateCounts() {
-  const embedCount = allVideos.filter((v) => v.category === 'embed').length;
-  const streamCount = allVideos.filter((v) => v.category === 'stream').length;
-  const directCount = allVideos.filter((v) => v.category === 'direct').length;
-
-  countAllEl.textContent = allVideos.length;
-  countEmbedEl.textContent = embedCount;
-  countStreamEl.textContent = streamCount;
-  countDirectEl.textContent = directCount;
-  if (countSyncedEl) {
-    countSyncedEl.textContent = syncedVideos.length;
-  }
+function closeAllDropdowns() {
+  document.querySelectorAll('.dropdown-menu:not(.hidden)').forEach((menu) => {
+    menu.classList.add('hidden');
+  });
+  activeDropdownEl = null;
 }
 
+// Renderização dos cartões idênticos ao Video DownloadHelper
 function renderList() {
-  updateCounts();
+  closeAllDropdowns();
   videoListEl.innerHTML = '';
 
   const isSyncedTab = activeFilter === 'synced';
-  const filtered = isSyncedTab
-    ? syncedVideos
-    : allVideos.filter((v) => {
-        if (activeFilter === 'all') return true;
-        return v.category === activeFilter;
-      });
+  const listToRender = isSyncedTab ? syncedVideos : allVideos;
 
-  if (filtered.length === 0) {
+  if (listToRender.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     if (isSyncedTab) {
       empty.innerHTML = `
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
         </svg>
         <h3>Nenhum vídeo salvo no Google Sync</h3>
-        <p>Clique em <strong>☁️ Sync</strong> em qualquer vídeo (ou baixe/copie um vídeo) para sincronizá-lo automaticamente entre seus computadores.</p>
+        <p>Clique no menu <strong>▾</strong> de qualquer vídeo e escolha <strong>☁️ Salvar no Google Sync</strong> para acessá-lo em outros dispositivos.</p>
       `;
     } else {
       empty.innerHTML = `
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"></circle>
           <polygon points="10 8 16 12 10 16 10 8"></polygon>
         </svg>
-        <h3>Nenhum vídeo detectado neste filtro</h3>
-        <p>Dê <strong>Play</strong> no vídeo da página para interceptar streams (<code>.m3u8</code> / <code>.mp4</code>) ou clique no botão de atualizar no topo para re-escanear iframes.</p>
+        <h3>Nenhum vídeo detectado nesta aba</h3>
+        <p>Dê <strong>Play no vídeo</strong> na página por 2 segundos para iniciar o fluxo de rede, ou use o botão <strong>🔗</strong> no topo para colar qualquer link.</p>
       `;
     }
     videoListEl.appendChild(empty);
     return;
   }
 
-  filtered.forEach((item) => {
+  listToRender.forEach((item) => {
     const card = document.createElement('div');
     card.className = 'video-card';
+    card.setAttribute('data-key', item.key || item.url);
 
-    const sizeLabel = formatBytes(item.sizeBytes);
-    const isAlreadySynced = syncedVideos.some((s) => s.url === item.url);
-    let refererHost = '';
-    try {
-      if (item.referer) refererHost = new URL(item.referer).hostname;
-    } catch {
-      refererHost = '';
+    const activeUrl = item.selectedVariantUrl || item.url || '';
+    const isHls = isHlsStream(item, activeUrl);
+    const protocolLabel = isHls ? 'HLS' : 'MP4';
+    const formatExt = 'MP4';
+
+    // Determina a qualidade ativa a exibir no pill verde
+    let currentQuality = item.qualityHint;
+    if (!currentQuality && Array.isArray(item.variants) && item.variants.length > 0) {
+      currentQuality = item.variants[0].label;
+    }
+    if (!currentQuality) {
+      currentQuality = isHls ? 'Auto' : 'Original';
     }
 
-    const syncBtnHtml = isSyncedTab
-      ? `<button class="mini-btn btn-sync-toggle" title="Remover este vídeo da nuvem (Google Sync)">🗑️ Remover</button>`
-      : `<button class="mini-btn btn-sync-toggle ${isAlreadySynced ? 'synced-active' : ''}" title="${
-          isAlreadySynced
-            ? 'Já sincronizado na Conta Google (clique para remover)'
-            : 'Salvar na Conta Google para acessar em outro computador'
-        }">${isAlreadySynced ? '☁️ Salvo' : '☁️ Sync'}</button>`;
-
+    const hasVariants = Array.isArray(item.variants) && item.variants.length > 0;
     const hasThumb = Boolean(item.thumbnailUrl);
+    const platformIcon = getPlatformIcon(item.provider);
+    const isAlreadySynced = syncedVideos.some((s) => s.url === item.url);
+
+    // Bloco da miniatura
     const thumbHtml = `
-      <div class="thumb-container">
-        ${hasThumb
-          ? `<img class="thumb-img" src="${escapeHtml(item.thumbnailUrl)}" alt="Thumbnail" loading="lazy" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
-             <div class="thumb-placeholder" style="display: none;">
-               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
-               </svg>
-             </div>`
-          : `<div class="thumb-placeholder">
-               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
-               </svg>
-             </div>`
-        }
-        <span class="thumb-platform-tag">${getPlatformIcon(item.provider)}</span>
-        ${item.duration ? `<span class="thumb-duration">${escapeHtml(item.duration)}</span>` : ''}
+      <div class="card-left">
+        <div class="thumb-wrapper">
+          ${
+            hasThumb
+              ? `<img class="thumb-img" src="${escapeHtml(item.thumbnailUrl)}" alt="Thumb" loading="lazy" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
+                 <div class="thumb-placeholder" style="display: none;">
+                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                     <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                   </svg>
+                 </div>`
+              : `<div class="thumb-placeholder">
+                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                     <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                   </svg>
+                 </div>`
+          }
+          <div class="thumb-badge-platform">
+            <span>${platformIcon}</span>
+            <span class="star-icon">★</span>
+          </div>
+          ${item.duration ? `<div class="thumb-badge-duration">${escapeHtml(item.duration)}</div>` : ''}
+        </div>
       </div>
     `;
 
     card.innerHTML = `
-      <div class="card-main-content">
-        ${thumbHtml}
-        <div class="card-details">
-          <div class="card-top">
-            <div class="badges">
-              <span class="badge" style="background: ${item.badgeColor || '#6366f1'}">${escapeHtml(item.provider)}</span>
-              <span class="badge badge-format">${escapeHtml(item.format)}</span>
-              ${item.qualityHint ? `<span class="badge badge-quality">${escapeHtml(item.qualityHint)}</span>` : ''}
-              ${sizeLabel ? `<span class="badge badge-format">${escapeHtml(sizeLabel)}</span>` : ''}
-            </div>
-            <div class="card-quick-icons">
-              ${syncBtnHtml}
-              ${!isSyncedTab ? `<button class="mini-btn btn-highlight" title="Destacar este player na página">🎯 Localizar</button>` : ''}
-              <button class="mini-btn btn-open" title="Abrir endereço em nova aba">↗</button>
-            </div>
+      ${thumbHtml}
+
+      <div class="card-right">
+        <div class="card-header-row">
+          <span class="protocol-badge">${protocolLabel}</span>
+          <span class="card-title" title="${escapeHtml(item.title || 'Vídeo detectado')}">${escapeHtml(item.title || 'Vídeo detectado')}</span>
+          <button class="btn-card-close" title="Remover este vídeo">✕</button>
+        </div>
+
+        <div class="card-actions-row">
+          <button class="btn-edit-title" title="Editar nome do arquivo">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+            </svg>
+          </button>
+
+          <div class="quality-dropdown-wrapper">
+            <button class="quality-selector-btn" title="Selecionar resolução / qualidade">
+              <span class="quality-ext">${formatExt}</span>
+              <span class="quality-tag">${escapeHtml(currentQuality)}</span>
+              <span class="quality-arrow">${hasVariants ? '⇅' : '▾'}</span>
+            </button>
+            <div class="dropdown-menu hidden quality-menu"></div>
           </div>
 
-          <div class="video-title" title="${escapeHtml(item.title || 'Vídeo sem título')}">
-            ${escapeHtml(item.title || 'Vídeo detectado na página')}
-          </div>
-
-          <div class="url-box" title="Clique para selecionar a URL completa">${escapeHtml(item.url)}</div>
-
-          <div class="meta-row">
-            <span>Origem: <strong>${
-              isSyncedTab
-                ? '☁️ Conta Google (Sync)'
-                : item.sourceType === 'network' || item.sourceType === 'network-verified'
-                ? 'Tráfego de Rede'
-                : 'Iframe / DOM'
-            }</strong></span>
-            ${refererHost ? `<span>Referer: <strong>${escapeHtml(refererHost)}</strong></span>` : ''}
+          <div class="download-split-wrapper">
+            <div class="download-split-btn">
+              <div class="dl-main-action" title="Baixar vídeo agora">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span>Baixar</span>
+              </div>
+              <div class="dl-menu-arrow" title="Mais opções de download">
+                ▾
+              </div>
+            </div>
+            <div class="dropdown-menu align-right hidden dl-options-menu">
+              <div class="dropdown-item" data-action="download-action">
+                <span>⬇️ Baixar ${isHls ? 'via HLS (.mp4)' : 'Direto (.mp4)'}</span>
+              </div>
+              <div class="dropdown-item" data-action="copy-ytdlp">
+                <span>💻 Copiar comando yt-dlp</span>
+              </div>
+              <div class="dropdown-item" data-action="copy-ffmpeg">
+                <span>🎬 Copiar comando ffmpeg</span>
+              </div>
+              <div class="dropdown-item" data-action="copy-url">
+                <span>📋 Copiar link do vídeo</span>
+              </div>
+              <div class="dropdown-item" data-action="sync-toggle">
+                <span>${isAlreadySynced ? '☁️ Remover do Google Sync' : '☁️ Salvar no Google Sync'}</span>
+              </div>
+              <div class="dropdown-item" data-action="open-tab">
+                <span>↗ Abrir link em nova aba</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-
-      <div class="actions-row">
-        <button class="btn btn-primary btn-download" title="Baixar vídeo em formato .MP4">⬇️ Baixar .MP4</button>
-        <button class="btn btn-ytdlp" title="Copiar comando completo do yt-dlp com Referer">💻 yt-dlp</button>
-        <button class="btn btn-ffmpeg" title="Copiar comando completo do ffmpeg com Referer">🎬 ffmpeg</button>
-        <button class="btn btn-copy-url" title="Copiar apenas o link do vídeo/player">📋 Link</button>
-      </div>
     `;
 
-    card.querySelector('.btn-download').addEventListener('click', () => {
-      saveVideoToSync(item, true);
-      handleDirectDownload(item);
-    });
-    card.querySelector('.btn-ytdlp').addEventListener('click', () => {
-      saveVideoToSync(item, true);
-      copyText(buildYtDlpCommand(item), 'Comando yt-dlp copiado e salvo no Sync!');
-    });
-    card.querySelector('.btn-ffmpeg').addEventListener('click', () => {
-      saveVideoToSync(item, true);
-      copyText(buildFfmpegCommand(item), 'Comando ffmpeg copiado e salvo no Sync!');
-    });
-    card.querySelector('.btn-copy-url').addEventListener('click', () => {
-      copyText(item.url, 'URL do vídeo copiada!');
-    });
-    card.querySelector('.btn-open').addEventListener('click', () => {
-      chrome.tabs.create({ url: item.url });
-    });
-    card.querySelector('.btn-sync-toggle').addEventListener('click', () => {
-      if (isSyncedTab || isAlreadySynced) {
+    // 1. Botão Fechar / Dispensar cartão
+    const closeBtn = card.querySelector('.btn-card-close');
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isSyncedTab) {
         removeVideoFromSync(item.url);
       } else {
-        saveVideoToSync(item, false);
+        if (currentTab && currentTab.id) {
+          chrome.runtime.sendMessage({
+            action: 'REMOVE_TAB_VIDEO',
+            tabId: currentTab.id,
+            key: item.key || item.url
+          });
+        }
+        allVideos = allVideos.filter((v) => (v.key || v.url) !== (item.key || item.url));
+        renderList();
+        showToast('Vídeo removido da lista.');
       }
     });
 
-    const highlightBtn = card.querySelector('.btn-highlight');
-    if (highlightBtn) {
-      highlightBtn.addEventListener('click', () => {
-        if (currentTab && currentTab.id) {
-          chrome.tabs.sendMessage(currentTab.id, { action: 'HIGHLIGHT_VIDEO', url: item.url }).catch(() => {});
-          showToast('Vídeo destacado na página!');
+    // 2. Botão Editar Título (Lápis)
+    const editBtn = card.querySelector('.btn-edit-title');
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      currentEditingItem = item;
+      renameInput.value = item.title || '';
+      renameModal.classList.remove('hidden');
+      setTimeout(() => {
+        renameInput.focus();
+        renameInput.select();
+      }, 50);
+    });
+
+    // 3. Dropdown de Resolução / Qualidade
+    const qualityBtn = card.querySelector('.quality-selector-btn');
+    const qualityMenu = card.querySelector('.quality-menu');
+    const qualityTagEl = card.querySelector('.quality-tag');
+
+    qualityBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isHidden = qualityMenu.classList.contains('hidden');
+      closeAllDropdowns();
+      if (isHidden) {
+        // Preenche as opções de qualidade
+        qualityMenu.innerHTML = '';
+        if (hasVariants) {
+          item.variants.forEach((v) => {
+            const opt = document.createElement('div');
+            const isSelected = (item.selectedVariantUrl || item.url) === v.url;
+            opt.className = `dropdown-item ${isSelected ? 'active' : ''}`;
+            const dimsLabel = v.width && v.height ? `${v.width}x${v.height}` : v.label;
+            opt.innerHTML = `
+              <span>${escapeHtml(dimsLabel)}</span>
+              <span class="quality-tag">${escapeHtml(v.label)}</span>
+            `;
+            opt.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              item.selectedVariantUrl = v.url;
+              item.qualityHint = v.label;
+              qualityTagEl.textContent = v.label;
+              if (currentTab && currentTab.id) {
+                chrome.runtime.sendMessage({
+                  action: 'SELECT_VIDEO_VARIANT',
+                  tabId: currentTab.id,
+                  key: item.key || item.url,
+                  variantUrl: v.url,
+                  qualityHint: v.label
+                });
+              }
+              closeAllDropdowns();
+              showToast(`Resolução alterada para ${v.label}!`);
+            });
+            qualityMenu.appendChild(opt);
+          });
+        } else {
+          const opt = document.createElement('div');
+          opt.className = 'dropdown-item active';
+          opt.innerHTML = `<span>Qualidade única</span><span class="quality-tag">${escapeHtml(currentQuality)}</span>`;
+          qualityMenu.appendChild(opt);
+        }
+        qualityMenu.classList.remove('hidden');
+        activeDropdownEl = qualityMenu;
+      }
+    });
+
+    // 4. Ação principal do Botão de Download (Pill azul)
+    const dlMainAction = card.querySelector('.dl-main-action');
+    dlMainAction.addEventListener('click', (e) => {
+      e.stopPropagation();
+      saveVideoToSync(item, true);
+      handleDirectDownload(item);
+    });
+
+    // 5. Menu com seta do Botão de Download
+    const dlMenuArrow = card.querySelector('.dl-menu-arrow');
+    const dlOptionsMenu = card.querySelector('.dl-options-menu');
+
+    dlMenuArrow.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isHidden = dlOptionsMenu.classList.contains('hidden');
+      closeAllDropdowns();
+      if (isHidden) {
+        dlOptionsMenu.classList.remove('hidden');
+        activeDropdownEl = dlOptionsMenu;
+      }
+    });
+
+    // Ações dos itens do menu suspenso
+    dlOptionsMenu.querySelectorAll('.dropdown-item').forEach((itemEl) => {
+      itemEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const action = itemEl.getAttribute('data-action');
+        closeAllDropdowns();
+
+        const targetUrl = item.selectedVariantUrl || item.url;
+
+        switch (action) {
+          case 'download-action':
+            saveVideoToSync(item, true);
+            handleDirectDownload(item);
+            break;
+          case 'copy-ytdlp':
+            saveVideoToSync(item, true);
+            copyText(buildYtDlpCommand(item), 'Comando yt-dlp copiado!');
+            break;
+          case 'copy-ffmpeg':
+            saveVideoToSync(item, true);
+            copyText(buildFfmpegCommand(item), 'Comando ffmpeg copiado!');
+            break;
+          case 'copy-url':
+            copyText(targetUrl, 'Link do vídeo copiado!');
+            break;
+          case 'sync-toggle':
+            if (isAlreadySynced) {
+              removeVideoFromSync(item.url);
+            } else {
+              saveVideoToSync(item, false);
+            }
+            break;
+          case 'open-tab':
+            chrome.tabs.create({ url: targetUrl });
+            break;
         }
       });
-    }
+    });
 
     videoListEl.appendChild(card);
   });
 }
 
-function escapeHtml(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+// Fechamento global de dropdowns ao clicar fora
+document.addEventListener('click', () => {
+  closeAllDropdowns();
+});
+
+// Ações do Modal Rename
+function saveRename() {
+  if (!currentEditingItem) return;
+  const newTitle = renameInput.value.trim();
+  if (newTitle) {
+    currentEditingItem.title = newTitle;
+    currentEditingItem.customTitle = newTitle;
+
+    if (currentTab && currentTab.id) {
+      chrome.runtime.sendMessage({
+        action: 'UPDATE_VIDEO_TITLE',
+        tabId: currentTab.id,
+        key: currentEditingItem.key || currentEditingItem.url,
+        title: newTitle
+      });
+    }
+
+    // Se estiver na lista sincronizada, atualiza lá também
+    const inSync = syncedVideos.find((s) => s.url === currentEditingItem.url);
+    if (inSync) {
+      inSync.title = newTitle;
+      persistSyncedVideos(syncedVideos);
+    }
+
+    renderList();
+    showToast('Nome do arquivo atualizado!');
+  }
+  renameModal.classList.add('hidden');
+  currentEditingItem = null;
 }
 
-async function loadTabVideos() {
-  await loadSyncedData();
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
-  currentTab = tab;
-
-  try {
-    const u = new URL(tab.url);
-    pageHostEl.textContent = u.hostname + (u.pathname !== '/' ? u.pathname : '');
-  } catch {
-    pageHostEl.textContent = tab.title || 'Aba atual';
+btnRenameSave.addEventListener('click', saveRename);
+btnRenameCancel.addEventListener('click', () => {
+  renameModal.classList.add('hidden');
+  currentEditingItem = null;
+});
+btnRenameClose.addEventListener('click', () => {
+  renameModal.classList.add('hidden');
+  currentEditingItem = null;
+});
+renameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    saveRename();
+  } else if (e.key === 'Escape') {
+    renameModal.classList.add('hidden');
+    currentEditingItem = null;
   }
-
-  chrome.tabs.sendMessage(tab.id, { action: 'RESCAN_DOM' }).catch(() => {});
-
-  // Se a aba atual já for um post de vídeo do X/Twitter, solicita extração imediata do MP4 direto
-  const tabTweetMatch = (tab.url || '').match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)/i);
-  if (tabTweetMatch) {
-    chrome.runtime.sendMessage(
-      {
-        action: 'RESOLVE_TWITTER_VIDEO',
-        tweetId: tabTweetMatch[1],
-        url: tab.url,
-        tabId: tab.id
-      },
-      () => {
-        chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
-          allVideos = (res && Array.isArray(res.videos)) ? res.videos : [];
-          renderList();
-        });
-      }
-    );
+});
+renameModal.addEventListener('click', (e) => {
+  if (e.target === renameModal) {
+    renameModal.classList.add('hidden');
+    currentEditingItem = null;
   }
+});
 
-  setTimeout(() => {
-    chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
-      allVideos = (res && Array.isArray(res.videos)) ? res.videos : [];
-      if (activeFilter === 'synced' && syncedVideos.length === 0 && allVideos.length > 0) {
-        activeFilter = 'all';
-        document.querySelectorAll('.tab').forEach((b) => {
-          b.classList.toggle('active', b.getAttribute('data-filter') === 'all');
-        });
-      }
-      renderList();
-    });
-  }, 150);
+// Ações do Modal "Sem vídeo?"
+function openHelpModal() {
+  helpModal.classList.remove('hidden');
 }
+function closeHelpModal() {
+  helpModal.classList.add('hidden');
+}
+
+btnNoVideoHelp.addEventListener('click', openHelpModal);
+btnFooterHelp.addEventListener('click', openHelpModal);
+btnHelpClose.addEventListener('click', closeHelpModal);
+helpModal.addEventListener('click', (e) => {
+  if (e.target === helpModal) closeHelpModal();
+});
+
+btnHelpActionRescan.addEventListener('click', () => {
+  closeHelpModal();
+  triggerRescan();
+});
+
+// Ações da Barra Inferior (Footer)
+btnFooterSettings.addEventListener('click', () => {
+  showToast('⚙️ Video Radar v1.4.0 — Otimizado para HLS, X e MP4');
+});
+
+btnFooterSync.addEventListener('click', () => {
+  activeFilter = activeFilter === 'synced' ? 'all' : 'synced';
+  btnFooterSync.classList.toggle('active', activeFilter === 'synced');
+  renderList();
+  if (activeFilter === 'synced') {
+    showToast('☁️ Exibindo vídeos da Conta Google (Sync)');
+  } else {
+    showToast('🎬 Exibindo vídeos da aba atual');
+  }
+});
+
+btnOpenDownloadsFolder.addEventListener('click', () => {
+  if (chrome.downloads && typeof chrome.downloads.showDefaultFolder === 'function') {
+    try {
+      chrome.downloads.showDefaultFolder();
+      showToast('Abrindo pasta de Downloads...');
+      return;
+    } catch {
+      // Fallback
+    }
+  }
+  chrome.tabs.create({ url: 'chrome://downloads' });
+});
+
+btnClearAll.addEventListener('click', async () => {
+  if (activeFilter === 'synced') {
+    await persistSyncedVideos([]);
+    renderList();
+    showToast('Lista sincronizada limpa!');
+    return;
+  }
+  if (!currentTab) return;
+  chrome.runtime.sendMessage({ action: 'CLEAR_TAB_VIDEOS', tabId: currentTab.id }, () => {
+    allVideos = [];
+    renderList();
+    showToast('Lista de vídeos limpa!');
+  });
+});
+
+btnOpenInTab.addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') });
+});
+
+// Barra rápida opcional de URL
+btnToggleUrlInput.addEventListener('click', () => {
+  quickUrlDrawer.classList.toggle('hidden');
+  if (!quickUrlDrawer.classList.contains('hidden')) {
+    customUrlInput.focus();
+  }
+});
 
 async function handleCustomUrlDownload() {
-  const inputEl = document.getElementById('customUrlInput');
-  const btnEl = document.getElementById('btnDownloadCustomUrl');
-  const rawUrl = (inputEl ? inputEl.value : '').trim();
+  const rawUrl = (customUrlInput ? customUrlInput.value : '').trim();
 
   if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
     showToast('Cole um link válido começando com http:// ou https://');
-    if (inputEl) inputEl.focus();
+    customUrlInput.focus();
     return;
   }
 
   const defaultReferer = currentTab && currentTab.url && /^https?:\/\//i.test(currentTab.url) ? currentTab.url : rawUrl;
-  const fallbackTitle = (currentTab && currentTab.title) || 'video_baixado';
+  const fallbackTitle = (currentTab && currentTab.title) || 'video_capturado';
 
-  if (btnEl) btnEl.disabled = true;
+  btnDownloadCustomUrl.disabled = true;
 
   try {
-    // 1. Link de post/vídeo do X / Twitter (ex: https://x.com/user/status/123456789/video/1)
+    // 1. Link do X / Twitter
     const tweetMatch = rawUrl.match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)(?:\/video\/(\d+))?/i);
     if (tweetMatch) {
       const tweetId = tweetMatch[1];
@@ -603,27 +838,28 @@ async function handleCustomUrlDownload() {
 
       if (res && res.ok && Array.isArray(res.videos) && res.videos.length > 0) {
         const chosen = res.videos[videoIndex] || res.videos[0];
-        await saveVideoToSync(
-          {
-            url: chosen.url,
-            title: chosen.title,
-            provider: chosen.provider || 'X / Twitter MP4',
-            badgeColor: '#1d9bf0',
-            category: 'direct',
-            format: 'Arquivo MP4',
-            qualityHint: chosen.qualityHint || 'HD MP4',
-            referer: rawUrl,
-            pageUrl: rawUrl
-          },
-          true
-        );
+        const itemToSave = {
+          url: chosen.url,
+          title: chosen.title,
+          provider: chosen.provider || 'X / Twitter',
+          badgeColor: '#1d9bf0',
+          category: 'direct',
+          format: 'MP4',
+          qualityHint: chosen.qualityHint || 'HD MP4',
+          thumbnailUrl: chosen.thumbnailUrl,
+          duration: chosen.duration,
+          referer: rawUrl,
+          pageUrl: rawUrl
+        };
+        await saveVideoToSync(itemToSave, true);
         if (currentTab && currentTab.id) {
           chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: currentTab.id }, (tabRes) => {
-            allVideos = (tabRes && Array.isArray(tabRes.videos)) ? tabRes.videos : allVideos;
+            allVideos = tabRes && Array.isArray(tabRes.videos) ? tabRes.videos : allVideos;
             renderList();
           });
         }
-        inputEl.value = '';
+        customUrlInput.value = '';
+        quickUrlDrawer.classList.add('hidden');
         startBrowserMp4Download(chosen.url, chosen.title, rawUrl);
       } else {
         showToast('Não foi possível extrair o vídeo deste link do X.', 3500);
@@ -631,7 +867,7 @@ async function handleCustomUrlDownload() {
       return;
     }
 
-    // 1.5. Link do YouTube (watch, shorts, youtu.be, embed)
+    // 2. Link do YouTube (watch, shorts, youtu.be, embed)
     const ytMatch = rawUrl.match(/(?:youtube(?:-nocookie)?\.com\/(?:embed\/|watch\?.*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
     if (ytMatch) {
       const videoId = ytMatch[1];
@@ -653,8 +889,8 @@ async function handleCustomUrlDownload() {
         provider: 'YouTube',
         badgeColor: '#ef4444',
         category: 'direct',
-        format: 'YouTube MP4',
-        qualityHint: 'HD / 1080p',
+        format: 'MP4',
+        qualityHint: '1080p',
         thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
         referer: rawUrl,
         pageUrl: rawUrl
@@ -670,62 +906,65 @@ async function handleCustomUrlDownload() {
           },
           () => {
             chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: currentTab.id }, (tabRes) => {
-              allVideos = (tabRes && Array.isArray(tabRes.videos)) ? tabRes.videos : allVideos;
+              allVideos = tabRes && Array.isArray(tabRes.videos) ? tabRes.videos : allVideos;
               renderList();
             });
           }
         );
       }
-      inputEl.value = '';
+      customUrlInput.value = '';
+      quickUrlDrawer.classList.add('hidden');
       handleDirectDownload(ytItem);
       return;
     }
 
-    // 2. Link de Stream HLS (.m3u8)
+    // 3. Link de Stream HLS (.m3u8)
     if (/\.m3u8(\?|$)/i.test(rawUrl)) {
-      await saveVideoToSync(
-        {
-          url: rawUrl,
-          title: fallbackTitle,
-          provider: 'Stream HLS',
-          badgeColor: '#10b981',
-          category: 'stream',
-          format: 'HLS (.m3u8 ➔ .mp4)',
-          referer: defaultReferer,
-          pageUrl: rawUrl
-        },
-        true
-      );
-      inputEl.value = '';
+      const hlsItem = {
+        url: rawUrl,
+        title: fallbackTitle,
+        provider: 'Stream HLS',
+        badgeColor: '#0284c7',
+        category: 'stream',
+        format: 'HLS',
+        streamType: 'HLS',
+        qualityHint: 'Auto',
+        referer: defaultReferer,
+        pageUrl: rawUrl
+      };
+      await saveVideoToSync(hlsItem, true);
+      customUrlInput.value = '';
+      quickUrlDrawer.classList.add('hidden');
       openHlsDownloader(rawUrl, fallbackTitle, defaultReferer);
       return;
     }
 
-    // 3. Link direto de vídeo (.mp4, .webm, .mov, .m4v, .mkv)
+    // 4. Link direto de vídeo (.mp4, .webm, .mov, .m4v, .mkv)
     if (/\.(mp4|webm|mov|m4v|mkv)(\?|$)/i.test(rawUrl)) {
-      await saveVideoToSync(
-        {
-          url: rawUrl,
-          title: fallbackTitle,
-          provider: 'Vídeo Direto',
-          badgeColor: '#3b82f6',
-          category: 'direct',
-          format: 'Arquivo MP4',
-          referer: defaultReferer,
-          pageUrl: rawUrl
-        },
-        true
-      );
-      inputEl.value = '';
+      const directItem = {
+        url: rawUrl,
+        title: fallbackTitle,
+        provider: 'Vídeo Direto',
+        badgeColor: '#3b82f6',
+        category: 'direct',
+        format: 'MP4',
+        qualityHint: 'HD',
+        referer: defaultReferer,
+        pageUrl: rawUrl
+      };
+      await saveVideoToSync(directItem, true);
+      customUrlInput.value = '';
+      quickUrlDrawer.classList.add('hidden');
       startBrowserMp4Download(rawUrl, fallbackTitle, defaultReferer);
       return;
     }
 
-    // 4. Outros links (Vimeo, Panda, Wistia, Bunny, páginas com vídeo embutido)
+    // 5. Outros links (Vimeo, Panda, Wistia, etc.)
     showToast('Analisando link para extrair o vídeo...', 3000);
     const extracted = await tryExtractStreamFromEmbedHtml(rawUrl, defaultReferer);
     if (extracted) {
-      inputEl.value = '';
+      customUrlInput.value = '';
+      quickUrlDrawer.classList.add('hidden');
       if (extracted.type === 'direct') {
         startBrowserMp4Download(extracted.url, fallbackTitle, rawUrl);
       } else {
@@ -734,38 +973,22 @@ async function handleCustomUrlDownload() {
       return;
     }
 
-    showToast('Não foi encontrado link direto (.mp4/.m3u8) nesse endereço.', 3500);
+    showToast('Não foi encontrado link de vídeo (.mp4/.m3u8) nesse endereço.', 3500);
   } finally {
-    if (btnEl) btnEl.disabled = false;
+    btnDownloadCustomUrl.disabled = false;
   }
 }
 
-document.getElementById('btnDownloadCustomUrl').addEventListener('click', handleCustomUrlDownload);
-document.getElementById('customUrlInput').addEventListener('keydown', (e) => {
+btnDownloadCustomUrl.addEventListener('click', handleCustomUrlDownload);
+customUrlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
     handleCustomUrlDownload();
   }
 });
 
-document.querySelectorAll('.tab').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    activeFilter = btn.getAttribute('data-filter') || 'all';
-    chrome.storage.sync.set({ radarPrefs: { activeFilter } }).catch(() => {});
-    renderList();
-  });
-});
-
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === 'sync' && changes.syncedVideos) {
-    syncedVideos = Array.isArray(changes.syncedVideos.newValue) ? changes.syncedVideos.newValue : [];
-    renderList();
-  }
-});
-
-document.getElementById('btnRescan').addEventListener('click', async () => {
+// Re-escaneamento da aba
+async function triggerRescan() {
   if (!currentTab) return;
   try {
     await chrome.scripting.executeScript({
@@ -778,21 +1001,62 @@ document.getElementById('btnRescan').addEventListener('click', async () => {
   chrome.tabs.sendMessage(currentTab.id, { action: 'RESCAN_DOM' }).catch(() => {});
   setTimeout(loadTabVideos, 300);
   showToast('Página e iframes re-escaneados!');
-});
+}
 
-document.getElementById('btnClear').addEventListener('click', async () => {
-  if (activeFilter === 'synced') {
-    await persistSyncedVideos([]);
-    renderList();
-    showToast('Lista sincronizada limpa!');
-    return;
+btnRescan.addEventListener('click', triggerRescan);
+
+// Carregamento inicial da aba
+async function loadTabVideos() {
+  await loadSyncedData();
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return;
+  currentTab = tab;
+
+  try {
+    const u = new URL(tab.url);
+    pageHostEl.textContent = u.hostname + (u.pathname !== '/' ? u.pathname : '');
+  } catch {
+    pageHostEl.textContent = tab.title || 'Aba atual';
   }
-  if (!currentTab) return;
-  chrome.runtime.sendMessage({ action: 'CLEAR_TAB_VIDEOS', tabId: currentTab.id }, () => {
-    allVideos = [];
-    renderList();
-    showToast('Lista limpa!');
-  });
+
+  chrome.tabs.sendMessage(tab.id, { action: 'RESCAN_DOM' }).catch(() => {});
+
+  // Se a aba for um post do X/Twitter, solicita resolução imediata
+  const tabTweetMatch = (tab.url || '').match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)/i);
+  if (tabTweetMatch) {
+    chrome.runtime.sendMessage(
+      {
+        action: 'RESOLVE_TWITTER_VIDEO',
+        tweetId: tabTweetMatch[1],
+        url: tab.url,
+        tabId: tab.id
+      },
+      () => {
+        chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
+          allVideos = res && Array.isArray(res.videos) ? res.videos : [];
+          renderList();
+        });
+      }
+    );
+  }
+
+  setTimeout(() => {
+    chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
+      allVideos = res && Array.isArray(res.videos) ? res.videos : [];
+      renderList();
+    });
+  }, 150);
+}
+
+// Sincronização automática em tempo real se dados mudarem
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'sync' && changes.syncedVideos) {
+    syncedVideos = Array.isArray(changes.syncedVideos.newValue) ? changes.syncedVideos.newValue : [];
+    if (activeFilter === 'synced') {
+      renderList();
+    }
+  }
 });
 
 document.addEventListener('DOMContentLoaded', loadTabVideos);

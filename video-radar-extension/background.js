@@ -515,7 +515,10 @@ async function resolveTwitterVideosByTweetId(tweetId) {
                 qualityHint: extractQualityHint(best.url) || 'HD MP4',
                 provider: 'X / Twitter MP4',
                 thumbnailUrl: thumb,
-                duration: durFormatted
+                duration: durFormatted,
+                mediaId: m.id_str || '',
+                durationMs: (m.video_info && m.video_info.duration_millis) || 0,
+                rawVariants: m.video_info.variants
               });
             }
           }
@@ -600,23 +603,268 @@ async function resolveTwitterVideosByTweetId(tweetId) {
 async function extractTwitterDirectMp4(tabId, tweetId, referer) {
   if (!tweetId) return [];
   const videos = await resolveTwitterVideosByTweetId(tweetId);
-  if (tabId && tabId > 0) {
-    for (const v of videos) {
-      await registerDetectedVideo(tabId, {
-        url: v.url,
-        title: v.title,
-        referer: referer || `https://x.com/i/status/${tweetId}`,
-        pageUrl: referer || `https://x.com/i/status/${tweetId}`,
-        qualityHint: v.qualityHint,
-        providerOverride: v.provider,
-        contentType: 'video/mp4',
-        thumbnailUrl: v.thumbnailUrl || null,
-        duration: v.duration || null,
-        sourceType: 'network-verified'
-      });
-    }
+  if (tabId && tabId > 0 && videos.length > 0) {
+    const media = videos.map((v) => {
+      const author = (v.title || '').split(' - ')[0] || '';
+      return {
+        id: v.mediaId || xMediaIdFromUrl(v.url) || `t${tweetId}_${v.url.split('/').pop().split('?')[0]}`,
+        tweetId,
+        user: author.replace(/^X_/, ''),
+        text: (v.title || '').split(' - ').slice(1).join(' - '),
+        type: 'video',
+        thumb: v.thumbnailUrl || '',
+        durationMs: v.durationMs || 0,
+        variants: Array.isArray(v.rawVariants) && v.rawVariants.length
+          ? v.rawVariants.map((rv) => ({ url: rv.url || rv.src, content_type: rv.content_type || rv.type || '', bitrate: rv.bitrate || 0 }))
+          : [{ url: v.url, content_type: 'video/mp4', bitrate: 0 }]
+      };
+    });
+    await upsertXMedia(tabId, media, referer || `https://x.com/i/status/${tweetId}`, { onlyIfMissing: true });
   }
   return videos;
+}
+
+// ---------- Agrupamento de vídeos (uma entrada por vídeo, com todas as qualidades) ----------
+
+function formatDurationSec(sec) {
+  if (!sec || isNaN(sec) || sec <= 0) return null;
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
+}
+
+function xMediaIdFromUrl(url) {
+  const m = String(url || '').match(/video\.twimg\.com\/(?:amplify_video|ext_tw_video)\/(\d+)\//i);
+  return m ? m[1] : null;
+}
+
+function parseDimsFromUrl(url) {
+  const m = String(url || '').match(/\/(\d{2,5})x(\d{2,5})\//);
+  return m ? { width: parseInt(m[1], 10), height: parseInt(m[2], 10) } : null;
+}
+
+function labelForDims(width, height, bitrate) {
+  const shortSide = Math.min(width || 0, height || 0);
+  if (shortSide) return `${shortSide}p`;
+  if (bitrate) return `${Math.round(bitrate / 1000)} kbps`;
+  return 'Auto';
+}
+
+function cleanTweetText(text) {
+  return String(text || '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 70);
+}
+
+async function upsertXMedia(tabId, mediaList, pageUrl, opts = {}) {
+  if (!tabId || tabId < 0 || !Array.isArray(mediaList) || mediaList.length === 0) return;
+  const map = await getTabMap(tabId);
+  let changed = false;
+  const now = Date.now();
+
+  for (const m of mediaList) {
+    if (!m || !m.id || !Array.isArray(m.variants)) continue;
+    const key = `x_media_${m.id}`;
+    const existing = map.get(key);
+    if (existing && opts.onlyIfMissing) continue;
+
+    const mp4s = m.variants.filter((v) => v && v.url && (/mp4/i.test(v.content_type || '') || /\.mp4(\?|$)/i.test(v.url)));
+    const hls = m.variants.find((v) => v && v.url && (/mpegurl/i.test(v.content_type || '') || /\.m3u8(\?|$)/i.test(v.url)));
+
+    const seenLabels = new Set();
+    let variants = mp4s
+      .map((v) => {
+        const dims = parseDimsFromUrl(v.url) || (m.width && m.height && mp4s.length === 1 ? { width: m.width, height: m.height } : null);
+        return {
+          url: v.url,
+          kind: 'mp4',
+          width: dims ? dims.width : 0,
+          height: dims ? dims.height : 0,
+          bitrate: v.bitrate || 0,
+          label: labelForDims(dims && dims.width, dims && dims.height, v.bitrate)
+        };
+      })
+      .sort((a, b) => b.width * b.height - a.width * a.height || b.bitrate - a.bitrate)
+      .filter((v) => {
+        if (seenLabels.has(v.label)) return false;
+        seenLabels.add(v.label);
+        return true;
+      });
+
+    if (variants.length === 0 && hls) {
+      variants = [{ url: hls.url, kind: 'hls', width: 0, height: 0, bitrate: 0, label: 'Auto' }];
+    }
+    if (variants.length === 0) continue;
+
+    const user = (m.user || '').replace(/^@/, '');
+    const text = cleanTweetText(m.text);
+    const autoTitle = user ? `@${user}${text ? ` - ${text}` : ''}` : text || `X_video_${m.id}`;
+    const statusUrl = m.tweetId ? `https://x.com/${user || 'i'}/status/${m.tweetId}` : pageUrl || 'https://x.com/';
+    const durationSec = m.durationMs ? m.durationMs / 1000 : (existing && existing.durationSec) || 0;
+
+    map.set(key, {
+      key,
+      url: variants[0].url,
+      provider: 'X / Twitter',
+      badgeColor: '#1d9bf0',
+      category: variants[0].kind === 'hls' ? 'stream' : 'direct',
+      format: m.type === 'animated_gif' ? 'GIF ➔ MP4' : 'MP4',
+      streamType: variants[0].kind === 'hls' ? 'HLS' : 'MP4',
+      isMasterPlaylist: false,
+      qualityHint: variants[0].label,
+      priority: 100,
+      title: (existing && existing.customTitle) || autoTitle,
+      customTitle: (existing && existing.customTitle) || null,
+      pageUrl: statusUrl,
+      referer: 'https://x.com/',
+      frameUrl: '',
+      sizeBytes: null,
+      sourceType: 'network-verified',
+      detectedAt: existing ? existing.detectedAt : now,
+      thumbnailUrl: m.thumb || (existing && existing.thumbnailUrl) || null,
+      durationSec,
+      duration: formatDurationSec(durationSec),
+      variants,
+      mediaId: m.id,
+      tweetId: m.tweetId || (existing && existing.tweetId) || null
+    });
+    changed = true;
+
+    // Remove entradas "cruas" de rede (master/variantes .m3u8 e .mp4) que pertencem a este mesmo vídeo
+    for (const [k, v] of map) {
+      if (k !== key && v && v.url && xMediaIdFromUrl(v.url) === String(m.id)) {
+        map.delete(k);
+      }
+    }
+  }
+
+  if (changed) await saveTabMap(tabId, map);
+}
+
+// ---------- Leitura de manifestos HLS (variantes + duração) ----------
+
+const hlsInfoCache = new Map(); // url -> Promise<info|null>
+const hlsChildKeysByTab = new Map(); // tabId -> Set(normalizedKey) de playlists filhas já agrupadas numa master
+
+function resolveRelUrl(rel, base) {
+  try {
+    return new URL(rel, base).href;
+  } catch {
+    return rel;
+  }
+}
+
+function sumExtinf(text) {
+  let total = 0;
+  const re = /#EXTINF:([\d.]+)/g;
+  let m;
+  while ((m = re.exec(text))) total += parseFloat(m[1]) || 0;
+  return total;
+}
+
+function fetchHlsInfo(url, referer) {
+  if (hlsInfoCache.has(url)) return hlsInfoCache.get(url);
+  const p = (async () => {
+    if (referer) await ensureRefererRule(url, referer);
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (!/#EXTM3U/.test(text)) return null;
+
+    if (/#EXT-X-STREAM-INF/i.test(text)) {
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const variants = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue;
+        const next = lines[i + 1];
+        if (!next || next.startsWith('#')) continue;
+        const resM = lines[i].match(/RESOLUTION=(\d+)x(\d+)/i);
+        const bwM = lines[i].match(/[^-]BANDWIDTH=(\d+)/i) || lines[i].match(/BANDWIDTH=(\d+)/i);
+        const width = resM ? parseInt(resM[1], 10) : 0;
+        const height = resM ? parseInt(resM[2], 10) : 0;
+        const bitrate = bwM ? parseInt(bwM[1], 10) : 0;
+        variants.push({
+          url: resolveRelUrl(next, url),
+          kind: 'hls',
+          width,
+          height,
+          bitrate,
+          label: labelForDims(width, height, bitrate),
+          separateAudio: /AUDIO="/i.test(lines[i])
+        });
+      }
+      variants.sort((a, b) => b.width * b.height - a.width * a.height || b.bitrate - a.bitrate);
+      const seen = new Set();
+      const unique = variants.filter((v) => (seen.has(v.label) ? false : (seen.add(v.label), true)));
+
+      let durationSec = 0;
+      if (unique.length > 0) {
+        try {
+          const vr = await fetch(unique[unique.length - 1].url);
+          if (vr.ok) durationSec = sumExtinf(await vr.text());
+        } catch {
+          // Ignore
+        }
+      }
+      return { master: true, variants: unique, allVariantUrls: variants.map((v) => v.url), durationSec };
+    }
+
+    const isLive = !/#EXT-X-ENDLIST/i.test(text);
+    return { master: false, variants: [], durationSec: isLive ? 0 : sumExtinf(text), isLive };
+  })().catch(() => null);
+  hlsInfoCache.set(url, p);
+  return p;
+}
+
+async function enrichHlsItem(tabId, key) {
+  const map0 = await getTabMap(tabId);
+  const item0 = map0.get(key);
+  if (!item0 || item0.hlsEnriched) return;
+
+  const info = await fetchHlsInfo(item0.url, item0.referer);
+  const map = await getTabMap(tabId);
+  const item = map.get(key);
+  if (!item) return;
+  item.hlsEnriched = true;
+
+  if (info) {
+    if (info.durationSec) {
+      item.durationSec = info.durationSec;
+      item.duration = formatDurationSec(info.durationSec);
+    }
+    if (info.isLive) item.isLive = true;
+    if (info.master && info.variants.length > 0) {
+      item.isMasterPlaylist = true;
+      item.variants = info.variants;
+      item.qualityHint = info.variants[0].label;
+
+      let children = hlsChildKeysByTab.get(tabId);
+      if (!children) {
+        children = new Set();
+        hlsChildKeysByTab.set(tabId, children);
+      }
+      for (const u of info.allVariantUrls) {
+        const ck = getNormalizedKey(u);
+        if (ck === key) continue;
+        children.add(ck);
+        const child = map.get(ck);
+        if (child) {
+          if (!item.thumbnailUrl && child.thumbnailUrl) item.thumbnailUrl = child.thumbnailUrl;
+          if (!item.title && child.title) item.title = child.title;
+          map.delete(ck);
+        }
+      }
+    } else if (!info.master) {
+      item.isMasterPlaylist = false;
+      item.variants = [{ url: item.url, kind: 'hls', width: 0, height: 0, bitrate: 0, label: item.qualityHint && item.qualityHint !== 'Master / Auto' ? item.qualityHint : 'Auto' }];
+    }
+  }
+  await saveTabMap(tabId, map);
 }
 
 function getNormalizedKey(url) {
@@ -706,6 +954,18 @@ async function registerDetectedVideo(tabId, rawItem) {
   );
   if (!classification) return;
 
+  // X / Twitter: playlists de variante (avc1 / mp4a) nunca viram card; se o vídeo já foi agrupado, ignora a URL crua
+  const xMid = xMediaIdFromUrl(classification.url);
+  if (xMid) {
+    if (/\/pl\/(?:avc1|mp4a|hvc1|hev1)\//i.test(classification.url)) return;
+    const mapX = await getTabMap(tabId);
+    if (mapX.has(`x_media_${xMid}`)) return;
+  }
+
+  // Playlists filhas de uma master já agrupada não viram card separado
+  const childSet = hlsChildKeysByTab.get(tabId);
+  if (childSet && childSet.has(getNormalizedKey(classification.url))) return;
+
   const referer = rawItem.referer || rawItem.pageUrl || '';
 
   // Se for um arquivo .mp4 vindo do DOM/script (não confirmado por resposta HTTP 200/206 de vídeo), verifica se o link não é 404
@@ -732,7 +992,8 @@ async function registerDetectedVideo(tabId, rawItem) {
     isMasterPlaylist: classification.isMasterPlaylist,
     qualityHint: rawItem.qualityHint || classification.qualityHint || (existing && existing.qualityHint) || null,
     priority: classification.priority,
-    title: rawItem.title || (existing && existing.title) || '',
+    title: (existing && existing.customTitle) || rawItem.title || (existing && existing.title) || '',
+    customTitle: (existing && existing.customTitle) || null,
     pageUrl: rawItem.pageUrl || (existing && existing.pageUrl) || '',
     referer: referer || (existing && existing.referer) || '',
     frameUrl: rawItem.frameUrl || (existing && existing.frameUrl) || '',
@@ -758,6 +1019,10 @@ async function registerDetectedVideo(tabId, rawItem) {
 
   map.set(key, merged);
   await saveTabMap(tabId, map);
+
+  if (classification.category === 'stream' || /\.m3u8(\?|$)/i.test(classification.url)) {
+    enrichHlsItem(tabId, key).catch(() => {});
+  }
 
   if (merged.referer && merged.category !== 'embed') {
     ensureRefererRule(merged.url, merged.referer);
@@ -894,6 +1159,77 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.action) return false;
 
+  if (message.action === 'ADD_X_MEDIA') {
+    const tabId = sender.tab ? sender.tab.id : message.tabId;
+    if (tabId && tabId > 0 && Array.isArray(message.media)) {
+      (async () => {
+        await upsertXMedia(tabId, message.media, message.pageUrl || (sender.tab && sender.tab.url) || '');
+        sendResponse({ ok: true });
+      })();
+      return true;
+    }
+    sendResponse({ ok: false });
+    return false;
+  }
+
+  if (message.action === 'REMOVE_TAB_VIDEO') {
+    const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
+    const key = message.key;
+    if (tabId && key) {
+      (async () => {
+        const map = await getTabMap(tabId);
+        if (map.has(key)) {
+          map.delete(key);
+          await saveTabMap(tabId, map);
+        }
+        sendResponse({ ok: true });
+      })();
+      return true;
+    }
+    sendResponse({ ok: false });
+    return false;
+  }
+
+  if (message.action === 'UPDATE_VIDEO_TITLE') {
+    const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
+    const { key, title } = message;
+    if (tabId && key && typeof title === 'string') {
+      (async () => {
+        const map = await getTabMap(tabId);
+        const item = map.get(key);
+        if (item) {
+          item.title = title.trim() || item.title;
+          item.customTitle = title.trim();
+          await saveTabMap(tabId, map);
+        }
+        sendResponse({ ok: true });
+      })();
+      return true;
+    }
+    sendResponse({ ok: false });
+    return false;
+  }
+
+  if (message.action === 'SELECT_VIDEO_VARIANT') {
+    const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
+    const { key, variantUrl, qualityHint } = message;
+    if (tabId && key && variantUrl) {
+      (async () => {
+        const map = await getTabMap(tabId);
+        const item = map.get(key);
+        if (item) {
+          item.selectedVariantUrl = variantUrl;
+          if (qualityHint) item.qualityHint = qualityHint;
+          await saveTabMap(tabId, map);
+        }
+        sendResponse({ ok: true });
+      })();
+      return true;
+    }
+    sendResponse({ ok: false });
+    return false;
+  }
+
   if (message.action === 'ADD_DOM_VIDEOS') {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
     if (!tabId || tabId < 0) {
@@ -965,8 +1301,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await ensureRefererRule(url, referer);
       }
 
-      // Se não for blob: da própria extensão, verifica antes se o arquivo direto realmente existe no servidor
-      if (!url.startsWith('blob:')) {
+      // Se não for blob: da própria extensão, verifica antes se o arquivo direto realmente existe no servidor.
+      // Ignora probe sintético de Range em CDNs confiáveis (Twitter/X, YouTube) onde Range de SW pode falhar com CORS/403.
+      const isTrustedCdn = /twimg\.com|twitter\.com|x\.com|googlevideo\.com|youtube\.com/i.test(url);
+      if (!url.startsWith('blob:') && !isTrustedCdn) {
         const alive = await verifyDirectUrlAlive(url, referer);
         if (!alive) {
           if (tabId) await removeDetectedVideo(tabId, url);
