@@ -35,11 +35,23 @@ function compactVideoForSync(item) {
     format: item.format || 'MP4',
     qualityHint: item.qualityHint || '',
     sizeBytes: item.sizeBytes || null,
+    thumbnailUrl: String(item.thumbnailUrl || '').slice(0, 300),
+    duration: String(item.duration || '').slice(0, 20),
     referer: String(item.referer || item.pageUrl || '').slice(0, 400),
     pageUrl: String(item.pageUrl || '').slice(0, 400),
     sourceType: item.sourceType || 'sync',
     savedAt: Date.now()
   };
+}
+
+function getPlatformIcon(provider) {
+  const p = (provider || '').toLowerCase();
+  if (p.includes('twitter') || p.includes('x /')) return '𝕏';
+  if (p.includes('youtube')) return '▶';
+  if (p.includes('vimeo')) return 'Ⓥ';
+  if (p.includes('wistia')) return 'W';
+  if (p.includes('panda')) return '🐼';
+  return '🎬';
 }
 
 async function persistSyncedVideos(list) {
@@ -110,8 +122,12 @@ function sanitizeFilename(rawTitle) {
 function buildYtDlpCommand(item) {
   const filename = sanitizeFilename(item.title);
   const ref = item.referer || item.pageUrl || '';
-  const parts = ['yt-dlp'];
 
+  if (/youtube\.com|youtu\.be/i.test(item.url)) {
+    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -o "${filename}.%(ext)s" "${item.url}"`;
+  }
+
+  const parts = ['yt-dlp'];
   if (ref && ref.startsWith('http')) {
     parts.push(`--referer "${ref.replace(/"/g, '\\"')}"`);
   }
@@ -226,7 +242,16 @@ async function tryExtractStreamFromEmbedHtml(embedUrl, referer) {
 async function handleDirectDownload(item) {
   const referer = item.referer || item.pageUrl || (currentTab ? currentTab.url : '');
 
-  // 0. Se for uma playlist .m3u8 do X/Twitter (onde vídeo e áudio são separados), resolve e baixa o .mp4 direto com áudio!
+  // 0. Se for YouTube (usa yt-dlp com resolução total + abre downloader web)
+  if (/youtube\.com|youtu\.be/i.test(item.url)) {
+    const cmd = buildYtDlpCommand(item);
+    copyText(cmd, 'Comando yt-dlp copiado! Use no terminal para baixar em 1080p/4K com áudio.');
+    showToast('YouTube: comando yt-dlp copiado! Abrindo opções de download direto...', 4000);
+    chrome.tabs.create({ url: `https://cobalt.tools/` });
+    return;
+  }
+
+  // 0.1 Se for uma playlist .m3u8 do X/Twitter (onde vídeo e áudio são separados), resolve e baixa o .mp4 direto com áudio!
   if (/video\.twimg\.com/i.test(item.url) && item.url.includes('.m3u8')) {
     const existingMp4 = allVideos.find((v) => v.category === 'direct' && /video\.twimg\.com/i.test(v.url));
     if (existingMp4) {
@@ -382,36 +407,62 @@ function renderList() {
             : 'Salvar na Conta Google para acessar em outro computador'
         }">${isAlreadySynced ? '☁️ Salvo' : '☁️ Sync'}</button>`;
 
+    const hasThumb = Boolean(item.thumbnailUrl);
+    const thumbHtml = `
+      <div class="thumb-container">
+        ${hasThumb
+          ? `<img class="thumb-img" src="${escapeHtml(item.thumbnailUrl)}" alt="Thumbnail" loading="lazy" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
+             <div class="thumb-placeholder" style="display: none;">
+               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
+               </svg>
+             </div>`
+          : `<div class="thumb-placeholder">
+               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
+               </svg>
+             </div>`
+        }
+        <span class="thumb-platform-tag">${getPlatformIcon(item.provider)}</span>
+        ${item.duration ? `<span class="thumb-duration">${escapeHtml(item.duration)}</span>` : ''}
+      </div>
+    `;
+
     card.innerHTML = `
-      <div class="card-top">
-        <div class="badges">
-          <span class="badge" style="background: ${item.badgeColor || '#6366f1'}">${escapeHtml(item.provider)}</span>
-          <span class="badge badge-format">${escapeHtml(item.format)}</span>
-          ${item.qualityHint ? `<span class="badge badge-quality">${escapeHtml(item.qualityHint)}</span>` : ''}
-          ${sizeLabel ? `<span class="badge badge-format">${escapeHtml(sizeLabel)}</span>` : ''}
+      <div class="card-main-content">
+        ${thumbHtml}
+        <div class="card-details">
+          <div class="card-top">
+            <div class="badges">
+              <span class="badge" style="background: ${item.badgeColor || '#6366f1'}">${escapeHtml(item.provider)}</span>
+              <span class="badge badge-format">${escapeHtml(item.format)}</span>
+              ${item.qualityHint ? `<span class="badge badge-quality">${escapeHtml(item.qualityHint)}</span>` : ''}
+              ${sizeLabel ? `<span class="badge badge-format">${escapeHtml(sizeLabel)}</span>` : ''}
+            </div>
+            <div class="card-quick-icons">
+              ${syncBtnHtml}
+              ${!isSyncedTab ? `<button class="mini-btn btn-highlight" title="Destacar este player na página">🎯 Localizar</button>` : ''}
+              <button class="mini-btn btn-open" title="Abrir endereço em nova aba">↗</button>
+            </div>
+          </div>
+
+          <div class="video-title" title="${escapeHtml(item.title || 'Vídeo sem título')}">
+            ${escapeHtml(item.title || 'Vídeo detectado na página')}
+          </div>
+
+          <div class="url-box" title="Clique para selecionar a URL completa">${escapeHtml(item.url)}</div>
+
+          <div class="meta-row">
+            <span>Origem: <strong>${
+              isSyncedTab
+                ? '☁️ Conta Google (Sync)'
+                : item.sourceType === 'network' || item.sourceType === 'network-verified'
+                ? 'Tráfego de Rede'
+                : 'Iframe / DOM'
+            }</strong></span>
+            ${refererHost ? `<span>Referer: <strong>${escapeHtml(refererHost)}</strong></span>` : ''}
+          </div>
         </div>
-        <div class="card-quick-icons">
-          ${syncBtnHtml}
-          ${!isSyncedTab ? `<button class="mini-btn btn-highlight" title="Destacar este player na página">🎯 Localizar</button>` : ''}
-          <button class="mini-btn btn-open" title="Abrir endereço em nova aba">↗</button>
-        </div>
-      </div>
-
-      <div class="video-title" title="${escapeHtml(item.title || 'Vídeo sem título')}">
-        ${escapeHtml(item.title || 'Vídeo detectado na página')}
-      </div>
-
-      <div class="url-box" title="Clique para selecionar a URL completa">${escapeHtml(item.url)}</div>
-
-      <div class="meta-row">
-        <span>Origem: <strong>${
-          isSyncedTab
-            ? '☁️ Conta Google (Sync)'
-            : item.sourceType === 'network' || item.sourceType === 'network-verified'
-            ? 'Tráfego de Rede'
-            : 'Iframe / DOM'
-        }</strong></span>
-        ${refererHost ? `<span>Referer: <strong>${escapeHtml(refererHost)}</strong></span>` : ''}
       </div>
 
       <div class="actions-row">
@@ -577,6 +628,56 @@ async function handleCustomUrlDownload() {
       } else {
         showToast('Não foi possível extrair o vídeo deste link do X.', 3500);
       }
+      return;
+    }
+
+    // 1.5. Link do YouTube (watch, shorts, youtu.be, embed)
+    const ytMatch = rawUrl.match(/(?:youtube(?:-nocookie)?\.com\/(?:embed\/|watch\?.*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+    if (ytMatch) {
+      const videoId = ytMatch[1];
+      showToast('Obtendo dados do vídeo do YouTube...', 2500);
+      let ytTitle = fallbackTitle;
+      try {
+        const oeRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+        if (oeRes.ok) {
+          const oeData = await oeRes.json();
+          if (oeData && oeData.title) ytTitle = oeData.title;
+        }
+      } catch {
+        // Ignore fetch error
+      }
+
+      const ytItem = {
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        title: ytTitle,
+        provider: 'YouTube',
+        badgeColor: '#ef4444',
+        category: 'direct',
+        format: 'YouTube MP4',
+        qualityHint: 'HD / 1080p',
+        thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        referer: rawUrl,
+        pageUrl: rawUrl
+      };
+
+      await saveVideoToSync(ytItem, true);
+      if (currentTab && currentTab.id) {
+        chrome.runtime.sendMessage(
+          {
+            action: 'ADD_DOM_VIDEOS',
+            tabId: currentTab.id,
+            videos: [ytItem]
+          },
+          () => {
+            chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: currentTab.id }, (tabRes) => {
+              allVideos = (tabRes && Array.isArray(tabRes.videos)) ? tabRes.videos : allVideos;
+              renderList();
+            });
+          }
+        );
+      }
+      inputEl.value = '';
+      handleDirectDownload(ytItem);
       return;
     }
 

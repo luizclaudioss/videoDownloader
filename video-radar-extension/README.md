@@ -6,19 +6,22 @@ Extensão de navegador (Manifest V3 — compatível com **Google Chrome, Brave, 
 
 ## ✨ O que ela detecta automaticamente
 
-1. **Players Embutidos (Iframes e Divs de Players)**:
+1. **Miniatura (Thumb) e Duração (estilo Video DownloadHelper)**:
+   - Apresenta miniatura (preview) do vídeo em 16:9, selo da plataforma (𝕏, YouTube, Vimeo, etc.) e etiqueta com a duração exata (`MM:SS`).
+2. **Players Embutidos & Plataformas**:
+   - **YouTube** (`youtube.com/watch`, `youtube.com/shorts`, `youtube.com/embed/...`, `youtu.be`)
+   - **X / Twitter** (`x.com`, `twitter.com`) com extração de MP4 direto com áudio e vídeo combinados
    - **Panda Video** (`tv.pandavideo.com.br`, `b-cdn.net`)
    - **Vimeo** (`player.vimeo.com/video/...`, `[data-vimeo-id]`)
    - **Wistia** (`fast.wistia.net/embed/iframe/...`, `wistia_async_...`, `wistia-player`)
-   - **YouTube** (`youtube.com/embed/...`, `youtube-nocookie.com`)
    - **VTurb / ConverteAI** (`scripts.converteai.net`, `cdn.converteai.net/.../main.m3u8`)
    - **Bunny Stream** (`iframe.mediadelivery.net/embed/...`)
    - **Hotmart Player** (`player.hotmart.com`, `cf-embed.play.hotmart.com`)
    - **Cloudflare Stream**, **Loom**, **Vidyard**, **Smartplayer / Scaleup**, **Dailymotion**
-2. **Streams de Vídeo (Tráfego de Rede + Scripts Inline)**:
+3. **Streams de Vídeo (Tráfego de Rede + Scripts Inline)**:
    - **HLS (`.m3u8`)** — identifica tanto a *Master Playlist* quanto as playlists de resolução (`1080p`, `720p`, etc.) e filtra automaticamente os pedaços `.ts` para não poluir a lista.
    - **DASH (`.mpd`)**
-3. **Arquivos de Vídeo Diretos**:
+4. **Arquivos de Vídeo Diretos**:
    - **`.mp4`, `.webm`, `.mov`, `.m4v`, `.mkv`** e tags `<video>` / `<source>`, exibindo o tamanho em MB quando informado pelo servidor.
 
 ---

@@ -57,6 +57,16 @@
     const refererUrl = document.referrer || currentUrl;
     const defaultTitle = getBestTitle(null);
 
+    function formatDuration(sec) {
+      if (!sec || isNaN(sec) || sec <= 0) return null;
+      const s = Math.round(sec);
+      const hrs = Math.floor(s / 3600);
+      const mins = Math.floor((s % 3600) / 60);
+      const secs = s % 60;
+      const pad = (n) => String(n).padStart(2, '0');
+      return hrs > 0 ? `${hrs}:${pad(mins)}:${pad(secs)}` : `${pad(mins)}:${pad(secs)}`;
+    }
+
     function addCandidate(item) {
       if (!item || !item.url) return;
       const fullUrl = resolveUrl(item.url);
@@ -72,17 +82,51 @@
         frameUrl: currentUrl,
         sourceType: item.sourceType || 'dom-video',
         providerOverride: item.providerOverride || null,
-        qualityHint: item.qualityHint || null
+        qualityHint: item.qualityHint || null,
+        thumbnailUrl: item.thumbnailUrl || null,
+        duration: item.duration || null
       });
+    }
+
+    // 0. Detecta vídeo do YouTube diretamente na página oficial (youtube.com/watch ou /shorts)
+    if (/(?:^|\.)(?:youtube\.com|youtu\.be)$/i.test(window.location.hostname)) {
+      const ytMatch = currentUrl.match(/(?:watch\?.*v=|shorts\/)([a-zA-Z0-9_-]{11})/i);
+      if (ytMatch) {
+        const videoId = ytMatch[1];
+        const vEl = document.querySelector('video');
+        const dur = (vEl && vEl.duration > 0) ? formatDuration(vEl.duration) : null;
+        let ytTitle = document.title.replace(/ - YouTube$/, '').trim();
+        const h1 = document.querySelector('h1.ytd-watch-metadata, #title h1, h1 yt-formatted-string');
+        if (h1 && h1.textContent.trim()) {
+          ytTitle = h1.textContent.trim();
+        }
+        addCandidate({
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          title: ytTitle || defaultTitle,
+          referer: currentUrl,
+          sourceType: 'dom-video',
+          providerOverride: 'YouTube',
+          thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          duration: dur,
+          qualityHint: 'HD / 1080p'
+        });
+      }
     }
 
     // 1. Se este script estiver rodando DENTRO de um iframe de player conhecido
     if (isIframe && VIDEO_IFRAME_REGEX.test(currentUrl)) {
+      let iframeThumb = null;
+      const ytM = currentUrl.match(/youtube(?:-nocookie)?\.com\/embed\/([a-zA-Z0-9_-]{11})/i);
+      if (ytM) iframeThumb = `https://i.ytimg.com/vi/${ytM[1]}/hqdefault.jpg`;
+      const vimM = currentUrl.match(/player\.vimeo\.com\/video\/(\d+)/i);
+      if (vimM) iframeThumb = `https://vumbnail.com/${vimM[1]}.jpg`;
+
       addCandidate({
         url: currentUrl,
         title: document.title || defaultTitle,
         referer: refererUrl,
-        sourceType: 'dom-iframe'
+        sourceType: 'dom-iframe',
+        thumbnailUrl: iframeThumb
       });
     }
 
@@ -90,6 +134,8 @@
     const videoEls = document.querySelectorAll('video');
     videoEls.forEach((video) => {
       const vTitle = getBestTitle(video);
+      const vPoster = video.poster || video.getAttribute('poster') || video.getAttribute('data-poster') || null;
+      const vDuration = (video.duration && !isNaN(video.duration) && video.duration > 0) ? formatDuration(video.duration) : null;
       const srcs = [video.currentSrc, video.src, video.getAttribute('data-src')];
       srcs.forEach((s) => {
         if (s && !s.startsWith('blob:')) {
@@ -97,7 +143,9 @@
             url: s,
             title: vTitle,
             sourceType: 'dom-video',
-            qualityHint: video.videoHeight ? `${video.videoHeight}p` : null
+            qualityHint: video.videoHeight ? `${video.videoHeight}p` : null,
+            thumbnailUrl: vPoster,
+            duration: vDuration
           });
         }
       });
@@ -110,7 +158,9 @@
             url: sUrl,
             title: vTitle,
             sourceType: 'dom-video',
-            qualityHint: label ? (String(label).endsWith('p') ? label : `${label}p`) : null
+            qualityHint: label ? (String(label).endsWith('p') ? label : `${label}p`) : null,
+            thumbnailUrl: vPoster,
+            duration: vDuration
           });
         }
       });
@@ -133,6 +183,35 @@
         iframe.hasAttribute('webkitallowfullscreen') ||
         allowAttr.includes('fullscreen') ||
         allowAttr.includes('autoplay');
+
+      const ytEmbedMatch = fullSrc.match(/youtube(?:-nocookie)?\.com\/embed\/([a-zA-Z0-9_-]{11})/i);
+      if (ytEmbedMatch) {
+        const videoId = ytEmbedMatch[1];
+        addCandidate({
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          title: getBestTitle(iframe),
+          referer: currentUrl,
+          sourceType: 'dom-iframe',
+          providerOverride: 'YouTube',
+          thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          qualityHint: 'HD / 1080p'
+        });
+        return;
+      }
+
+      const vimeoEmbedMatch = fullSrc.match(/player\.vimeo\.com\/video\/(\d+)/i);
+      if (vimeoEmbedMatch) {
+        const vimeoId = vimeoEmbedMatch[1];
+        addCandidate({
+          url: `https://player.vimeo.com/video/${vimeoId}`,
+          title: getBestTitle(iframe),
+          referer: currentUrl,
+          sourceType: 'dom-iframe',
+          providerOverride: 'Vimeo',
+          thumbnailUrl: `https://vumbnail.com/${vimeoId}.jpg`
+        });
+        return;
+      }
 
       if (VIDEO_IFRAME_REGEX.test(fullSrc) || (hasFullscreen && /(player|embed|video|watch|stream)/i.test(fullSrc))) {
         addCandidate({
@@ -158,7 +237,8 @@
           title: getBestTitle(el),
           referer: currentUrl,
           sourceType: 'dom-embed',
-          providerOverride: 'Wistia'
+          providerOverride: 'Wistia',
+          thumbnailUrl: `https://fast.wistia.com/embed/medias/${mediaId}/swatch`
         });
       }
     });
@@ -174,7 +254,8 @@
           title: getBestTitle(el),
           referer: currentUrl,
           sourceType: 'dom-embed',
-          providerOverride: 'Vimeo'
+          providerOverride: 'Vimeo',
+          thumbnailUrl: `https://vumbnail.com/${vimeoId}.jpg`
         });
       } else if (vimeoUrl) {
         addCandidate({
@@ -206,37 +287,52 @@
 
     // 7. Meta tags OpenGraph
     const ogVideo = document.querySelector('meta[property="og:video"], meta[property="og:video:secure_url"], meta[property="og:video:url"]');
+    const ogImage = document.querySelector('meta[property="og:image"], meta[name="twitter:image"]');
+    const pageOgThumb = ogImage ? ogImage.content : null;
+
     if (ogVideo && ogVideo.content) {
       addCandidate({
         url: ogVideo.content,
         title: defaultTitle,
         referer: currentUrl,
-        sourceType: 'dom-embed'
+        sourceType: 'dom-embed',
+        thumbnailUrl: pageOgThumb
       });
     }
 
-    // 7.1. X / Twitter (x.com / twitter.com) — detecta vídeo do post aberto ou posts com vídeo na timeline
+    // 7.1. X / Twitter (x.com / twitter.com) — detecta vídeo do post aberto ou posts com vídeo na timeline com poster e duração
     if (/(?:^|\.)(?:x\.com|twitter\.com)$/i.test(window.location.hostname)) {
       if (/\/status\/\d+/i.test(currentUrl)) {
+        const activeVid = document.querySelector('video');
+        const poster = activeVid ? (activeVid.poster || activeVid.getAttribute('poster') || null) : null;
+        const dur = (activeVid && activeVid.duration > 0) ? formatDuration(activeVid.duration) : null;
         addCandidate({
           url: currentUrl,
           title: defaultTitle,
           referer: currentUrl,
           sourceType: 'dom-embed',
-          providerOverride: 'X / Twitter'
+          providerOverride: 'X / Twitter',
+          thumbnailUrl: poster,
+          duration: dur
         });
       }
       const articles = document.querySelectorAll('article');
       articles.forEach((art) => {
-        if (!art.querySelector('video, [data-testid="videoPlayer"], [data-testid="videoComponent"]')) return;
+        const vid = art.querySelector('video');
+        if (!vid) return;
         const statusLink = art.querySelector('a[href*="/status/"]');
         if (statusLink && statusLink.href) {
+          const poster = vid.poster || vid.getAttribute('poster') || null;
+          const dur = (vid.duration && vid.duration > 0) ? formatDuration(vid.duration) : null;
+          const tweetText = art.querySelector('[data-testid="tweetText"]')?.textContent?.slice(0, 80);
           addCandidate({
             url: statusLink.href,
-            title: defaultTitle,
+            title: tweetText ? tweetText.trim() : defaultTitle,
             referer: currentUrl,
             sourceType: 'dom-embed',
-            providerOverride: 'X / Twitter'
+            providerOverride: 'X / Twitter',
+            thumbnailUrl: poster,
+            duration: dur
           });
         }
       });

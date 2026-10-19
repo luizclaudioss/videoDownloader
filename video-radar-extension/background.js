@@ -117,9 +117,9 @@ const PROVIDER_PATTERNS = [
   {
     name: 'YouTube',
     badgeColor: '#ef4444',
-    regex: /youtube(-nocookie)?\.com\/embed\/([a-zA-Z0-9_-]{11})|youtu\.be\/([a-zA-Z0-9_-]{11})/i,
+    regex: /(?:youtube(-nocookie)?\.com\/(?:embed\/|watch\?.*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i,
     extractEmbedUrl: (url) => {
-      const m = url.match(/youtube(?:-nocookie)?\.com\/embed\/([a-zA-Z0-9_-]{11})/i);
+      const m = url.match(/(?:youtube(?:-nocookie)?\.com\/(?:embed\/|watch\?.*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
       return m ? `https://www.youtube.com/watch?v=${m[1]}` : url;
     }
   },
@@ -254,7 +254,24 @@ function classifyVideoUrl(url, contentType = '', sourceType = 'network') {
       format: 'Wistia Player',
       isMasterPlaylist: true,
       qualityHint: null,
+      thumbnailUrl: `https://fast.wistia.com/embed/medias/${mediaId}/swatch`,
       priority: 70
+    };
+  }
+
+  const ytMatch = url.match(/(?:youtube(?:-nocookie)?\.com\/(?:embed\/|watch\?.*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+  if (ytMatch) {
+    const videoId = ytMatch[1];
+    return {
+      url: `https://www.youtube.com/watch?v=${videoId}`,
+      provider: 'YouTube',
+      badgeColor: '#ef4444',
+      category: 'embed',
+      format: 'YouTube Vídeo',
+      isMasterPlaylist: false,
+      qualityHint: 'HD / 1080p',
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      priority: 95
     };
   }
 
@@ -484,11 +501,21 @@ async function resolveTwitterVideosByTweetId(tweetId) {
             const cleanUrl = best.url.split('?')[0];
             if (!seenUrls.has(cleanUrl)) {
               seenUrls.add(cleanUrl);
+              const thumb = m.media_url_https || (m.video_info && m.video_info.poster_url) || null;
+              let durFormatted = null;
+              if (m.video_info && m.video_info.duration_millis) {
+                const s = Math.round(m.video_info.duration_millis / 1000);
+                const mins = Math.floor(s / 60);
+                const secs = s % 60;
+                durFormatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+              }
               results.push({
                 url: best.url,
                 title: mediaList.length > 1 ? `${baseTitle} (${idx + 1})` : baseTitle,
                 qualityHint: extractQualityHint(best.url) || 'HD MP4',
-                provider: 'X / Twitter MP4'
+                provider: 'X / Twitter MP4',
+                thumbnailUrl: thumb,
+                duration: durFormatted
               });
             }
           }
@@ -508,7 +535,8 @@ async function resolveTwitterVideosByTweetId(tweetId) {
               url: best.src,
               title: baseTitle,
               qualityHint: extractQualityHint(best.src) || 'HD MP4',
-              provider: 'X / Twitter MP4'
+              provider: 'X / Twitter MP4',
+              thumbnailUrl: data.video.poster || null
             });
           }
         }
@@ -538,11 +566,21 @@ async function resolveTwitterVideosByTweetId(tweetId) {
                 m.size && m.size.width && m.size.height
                   ? `${m.size.width}x${m.size.height}`
                   : extractQualityHint(m.url) || 'HD MP4';
+              const thumb = m.poster_url || m.thumbnail_url || null;
+              let durFormatted = null;
+              if (m.duration_millis) {
+                const s = Math.round(m.duration_millis / 1000);
+                const mins = Math.floor(s / 60);
+                const secs = s % 60;
+                durFormatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+              }
               results.push({
                 url: m.url,
                 title: extList.length > 1 ? `${baseTitle} (${idx + 1})` : baseTitle,
                 qualityHint: qHint,
-                provider: 'X / Twitter MP4'
+                provider: 'X / Twitter MP4',
+                thumbnailUrl: thumb,
+                duration: durFormatted
               });
             }
           }
@@ -572,6 +610,8 @@ async function extractTwitterDirectMp4(tabId, tweetId, referer) {
         qualityHint: v.qualityHint,
         providerOverride: v.provider,
         contentType: 'video/mp4',
+        thumbnailUrl: v.thumbnailUrl || null,
+        duration: v.duration || null,
         sourceType: 'network-verified'
       });
     }
@@ -698,8 +738,23 @@ async function registerDetectedVideo(tabId, rawItem) {
     frameUrl: rawItem.frameUrl || (existing && existing.frameUrl) || '',
     sizeBytes: rawItem.sizeBytes || (existing && existing.sizeBytes) || null,
     sourceType: existing ? existing.sourceType : (rawItem.sourceType || 'network'),
-    detectedAt: existing ? existing.detectedAt : now
+    detectedAt: existing ? existing.detectedAt : now,
+    thumbnailUrl: rawItem.thumbnailUrl || classification.thumbnailUrl || (existing && existing.thumbnailUrl) || null,
+    duration: rawItem.duration || (existing && existing.duration) || null
   };
+
+  // Se não possui thumbnail definida, tenta derivar para YouTube ou Vimeo
+  if (!merged.thumbnailUrl) {
+    const ytM = merged.url.match(/(?:youtube(?:-nocookie)?\.com\/(?:embed\/|watch\?.*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+    if (ytM) {
+      merged.thumbnailUrl = `https://i.ytimg.com/vi/${ytM[1]}/hqdefault.jpg`;
+    } else {
+      const vimeoM = merged.url.match(/vimeo\.com\/(?:video\/)?(\d+)/i);
+      if (vimeoM) {
+        merged.thumbnailUrl = `https://vumbnail.com/${vimeoM[1]}.jpg`;
+      }
+    }
+  }
 
   map.set(key, merged);
   await saveTabMap(tabId, map);
@@ -815,6 +870,19 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const tweetId = extractTweetIdFromUrl(candidateUrl);
   if (tweetId) {
     extractTwitterDirectMp4(tabId, tweetId, candidateUrl);
+  }
+  const ytMatch = candidateUrl.match(/(?:youtube(?:-nocookie)?\.com\/(?:embed\/|watch\?.*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+  if (ytMatch) {
+    const videoId = ytMatch[1];
+    registerDetectedVideo(tabId, {
+      url: `https://www.youtube.com/watch?v=${videoId}`,
+      title: tab && tab.title ? tab.title.replace(/ - YouTube$/, '') : 'Vídeo do YouTube',
+      providerOverride: 'YouTube',
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      pageUrl: candidateUrl,
+      sourceType: 'dom-video',
+      qualityHint: 'HD / 1080p'
+    });
   }
 });
 
