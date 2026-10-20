@@ -81,6 +81,18 @@ body {
   gap: 6px;
 }
 
+.version-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--badge-hls);
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  padding: 2px 6px;
+  border-radius: 9999px;
+  letter-spacing: 0.3px;
+  user-select: none;
+}
+
 .icon-btn-compact {
   background: var(--bg-btn);
   border: 1px solid var(--border-btn);

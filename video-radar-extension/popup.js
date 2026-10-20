@@ -74,8 +74,23 @@ function formatBytes(bytes) {
   return `${kb.toFixed(0)} KB`;
 }
 
+function cleanMetaCdnVideoUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+  try {
+    const u = new URL(rawUrl);
+    if (/cdninstagram\.com|fbcdn\.net/i.test(u.hostname)) {
+      u.searchParams.delete('bytestart');
+      u.searchParams.delete('byteend');
+      return u.toString();
+    }
+  } catch {}
+  return rawUrl;
+}
+
 function getPlatformIcon(provider) {
   const p = (provider || '').toLowerCase();
+  if (p.includes('instagram')) return '📸';
+  if (p.includes('facebook') || p.includes('fb')) return '👤';
   if (p.includes('twitter') || p.includes('x /') || p === 'x') return '𝕏';
   if (p.includes('youtube')) return '▶';
   if (p.includes('vimeo')) return 'Ⓥ';
@@ -158,7 +173,7 @@ function buildYtDlpCommand(item) {
   const targetUrl = item.selectedVariantUrl || item.url;
 
   if (/youtube\.com|youtu\.be/i.test(targetUrl)) {
-    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -o "${filename}.%(ext)s" "${targetUrl}"`;
+    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -P "$HOME/Downloads" -o "${filename}.%(ext)s" "${targetUrl}"`;
   }
 
   const parts = ['yt-dlp'];
@@ -167,6 +182,7 @@ function buildYtDlpCommand(item) {
   }
   parts.push('-N 8');
   parts.push('--merge-output-format mp4');
+  parts.push('-P "$HOME/Downloads"');
   parts.push(`-o "${filename}.%(ext)s"`);
   parts.push(`"${targetUrl}"`);
 
@@ -184,7 +200,7 @@ function buildFfmpegCommand(item) {
   }
   parts.push(`-i "${targetUrl}"`);
   parts.push('-c copy -bsf:a aac_adtstoasc');
-  parts.push(`"${filename}.mp4"`);
+  parts.push(`"$HOME/Downloads/${filename}.mp4"`);
 
   return parts.join(' ');
 }
@@ -291,29 +307,29 @@ function isHlsStream(item, targetUrl) {
 }
 
 async function handleDirectDownload(item) {
-  const targetUrl = item.selectedVariantUrl || item.url;
+  const rawTargetUrl = item.selectedVariantUrl || item.url;
+  const targetUrl = cleanMetaCdnVideoUrl(rawTargetUrl);
   const referer = item.referer || item.pageUrl || (currentTab ? currentTab.url : '');
   const title = item.title || 'video_capturado';
 
-  // 1. YouTube
-  if (/youtube\.com|youtu\.be/i.test(targetUrl) || (item.provider && item.provider.toLowerCase().includes('youtube'))) {
-    const cmd = buildYtDlpCommand(item);
-    copyText(cmd, 'Comando yt-dlp copiado! Use no terminal para baixar em 1080p/4K com áudio.');
-    showToast('YouTube: comando yt-dlp (1080p/4K) copiado! Abrindo opções web...', 4000);
-    chrome.tabs.create({ url: 'https://cobalt.tools/' });
+  // 1. Se for Stream HLS (inclusive os manifestos 1080p/720p do YouTube interceptados na página)
+  const isHls = isHlsStream(item, targetUrl);
+  if (isHls) {
+    openHlsDownloader(targetUrl, title, referer);
     return;
   }
 
-  // 2. Arquivo Direto (.mp4, .webm, .mov, etc.) - Baixa direto no navegador (prioridade máxima para MP4s)
-  if (/\.(mp4|webm|mov|m4v)(\?|$)/i.test(targetUrl) || item.category === 'direct' || !isHlsStream(item, targetUrl)) {
+  // 2. Se for Arquivo Direto (.mp4, .webm, .mov, etc.)
+  if (/\.(mp4|webm|mov|m4v)(\?|$)/i.test(targetUrl) || item.category === 'direct') {
     startBrowserMp4Download(targetUrl, title, referer);
     return;
   }
 
-  // 3. Stream HLS (.m3u8) - Abre o conversor integrado HLS
-  const isHls = isHlsStream(item, targetUrl);
-  if (isHls) {
-    openHlsDownloader(targetUrl, title, referer);
+  // 3. Fallback apenas se for uma URL de página web sem stream de rede identificado
+  if (/youtube\.com|youtu\.be/i.test(targetUrl)) {
+    const cmd = buildYtDlpCommand(item);
+    copyText(cmd, 'Comando yt-dlp copiado!');
+    showToast('Dê Play no vídeo da página por 2 segundos para interceptar o fluxo!', 3500);
     return;
   }
 
@@ -409,8 +425,11 @@ function renderList() {
     card.setAttribute('data-key', item.key || item.url);
 
     const activeUrl = item.selectedVariantUrl || item.url || '';
+    const isYouTube =
+      Boolean(item.provider && item.provider.toLowerCase().includes('youtube')) ||
+      /youtube\.com|youtu\.be/i.test(item.url || '');
     const isHls = isHlsStream(item, activeUrl);
-    const protocolLabel = isHls ? 'HLS' : 'MP4';
+    const protocolLabel = isYouTube ? 'YOUTUBE' : isHls ? 'HLS' : 'MP4';
     const formatExt = 'MP4';
 
     // Determina a qualidade ativa a exibir no pill verde
@@ -433,7 +452,7 @@ function renderList() {
         <div class="thumb-wrapper">
           ${
             hasThumb
-              ? `<img class="thumb-img" src="${escapeHtml(item.thumbnailUrl)}" alt="Thumb" loading="lazy" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
+              ? `<img class="thumb-img" src="${escapeHtml(item.thumbnailUrl)}" alt="Thumb" loading="lazy" />
                  <div class="thumb-placeholder" style="display: none;">
                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                      <polygon points="5 3 19 12 5 21 5 3"></polygon>
@@ -497,7 +516,7 @@ function renderList() {
             </div>
             <div class="dropdown-menu align-right hidden dl-options-menu">
               <div class="dropdown-item" data-action="download-action">
-                <span>⬇️ Baixar ${isHls ? 'via HLS (.mp4)' : 'Direto (.mp4)'}</span>
+                <span>⬇️ Baixar ${isYouTube ? 'via yt-dlp' : isHls ? 'via HLS (.mp4)' : 'Direto (.mp4)'}</span>
               </div>
               <div class="dropdown-item" data-action="copy-ytdlp">
                 <span>💻 Copiar comando yt-dlp</span>
@@ -508,6 +527,10 @@ function renderList() {
               <div class="dropdown-item" data-action="copy-url">
                 <span>📋 Copiar link do vídeo</span>
               </div>
+              ${isYouTube ? `
+              <div class="dropdown-item" data-action="open-cobalt">
+                <span>🌐 Abrir no Cobalt Web (opcional)</span>
+              </div>` : ''}
               <div class="dropdown-item" data-action="sync-toggle">
                 <span>${isAlreadySynced ? '☁️ Remover do Google Sync' : '☁️ Salvar no Google Sync'}</span>
               </div>
@@ -519,6 +542,16 @@ function renderList() {
         </div>
       </div>
     `;
+
+    // Fallback de erro para a miniatura via event listener (compatível com CSP MV3)
+    const thumbImg = card.querySelector('.thumb-img');
+    if (thumbImg) {
+      thumbImg.addEventListener('error', () => {
+        thumbImg.style.display = 'none';
+        const placeholder = card.querySelector('.thumb-placeholder');
+        if (placeholder) placeholder.style.display = 'flex';
+      });
+    }
 
     // 1. Botão Fechar / Dispensar cartão
     const closeBtn = card.querySelector('.btn-card-close');
@@ -643,14 +676,17 @@ function renderList() {
             break;
           case 'copy-ytdlp':
             saveVideoToSync(item, true);
-            copyText(buildYtDlpCommand(item), 'Comando yt-dlp copiado!');
+            copyText(buildYtDlpCommand(item), 'Comando yt-dlp copiado (salvará em Downloads)!');
             break;
           case 'copy-ffmpeg':
             saveVideoToSync(item, true);
-            copyText(buildFfmpegCommand(item), 'Comando ffmpeg copiado!');
+            copyText(buildFfmpegCommand(item), 'Comando ffmpeg copiado (salvará em Downloads)!');
             break;
           case 'copy-url':
             copyText(targetUrl, 'Link do vídeo copiado!');
+            break;
+          case 'open-cobalt':
+            chrome.tabs.create({ url: 'https://cobalt.tools/' });
             break;
           case 'sync-toggle':
             if (isAlreadySynced) {
@@ -751,9 +787,20 @@ btnHelpActionRescan.addEventListener('click', () => {
   triggerRescan();
 });
 
+function updateAppVersionDisplay() {
+  const manifest = chrome.runtime && typeof chrome.runtime.getManifest === 'function' ? chrome.runtime.getManifest() : null;
+  const ver = (manifest && manifest.version) || '2.0.0';
+  const badgeEl = document.getElementById('appVersionBadge');
+  if (badgeEl) {
+    badgeEl.textContent = `v${ver}`;
+  }
+  return ver;
+}
+
 // Ações da Barra Inferior (Footer)
 btnFooterSettings.addEventListener('click', () => {
-  showToast('⚙️ Video Radar v1.4.0 — Otimizado para HLS, X e MP4');
+  const ver = updateAppVersionDisplay();
+  showToast(`⚙️ Video Radar v${ver} — YouTube, Instagram, Facebook, X, HLS e MP4`);
 });
 
 btnFooterSync.addEventListener('click', () => {
@@ -1007,20 +1054,37 @@ btnRescan.addEventListener('click', triggerRescan);
 
 // Carregamento inicial da aba
 async function loadTabVideos() {
-  await loadSyncedData();
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
-  currentTab = tab;
-
+  updateAppVersionDisplay();
+  let tab = null;
   try {
-    const u = new URL(tab.url);
-    pageHostEl.textContent = u.hostname + (u.pathname !== '/' ? u.pathname : '');
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs && tabs.length > 0) {
+      tab = tabs[0];
+      currentTab = tab;
+      try {
+        const u = new URL(tab.url);
+        pageHostEl.textContent = u.hostname + (u.pathname !== '/' && u.pathname.length < 35 ? u.pathname : '');
+      } catch {
+        pageHostEl.textContent = tab.title || 'Aba atual';
+      }
+    } else {
+      pageHostEl.textContent = 'Aba atual';
+    }
   } catch {
-    pageHostEl.textContent = tab.title || 'Aba atual';
+    pageHostEl.textContent = 'Aba atual';
   }
 
+  await loadSyncedData().catch(() => {});
+
+  if (!tab || !tab.id) return;
+
   chrome.tabs.sendMessage(tab.id, { action: 'RESCAN_DOM' }).catch(() => {});
+
+  // Se a aba for Instagram ou Facebook, solicita varredura imediata
+  const isMetaTab = Boolean(tab.url && /(?:instagram\.com|facebook\.com)/i.test(tab.url));
+  if (isMetaTab) {
+    chrome.tabs.sendMessage(tab.id, { action: 'TRIGGER_META_SCAN' }).catch(() => {});
+  }
 
   // Se a aba for um post do X/Twitter, solicita resolução imediata
   const tabTweetMatch = (tab.url || '').match(/(?:x\.com|twitter\.com)\/(?:[^\/]+\/status|i\/status|status)\/(\d+)/i);
@@ -1041,12 +1105,19 @@ async function loadTabVideos() {
     );
   }
 
+  // Busca inicial imediata dos vídeos da aba
+  chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
+    allVideos = res && Array.isArray(res.videos) ? res.videos : [];
+    renderList();
+  });
+
+  // Busca secundária após 250ms para capturar resultados assíncronos do hook
   setTimeout(() => {
     chrome.runtime.sendMessage({ action: 'GET_TAB_VIDEOS', tabId: tab.id }, (res) => {
       allVideos = res && Array.isArray(res.videos) ? res.videos : [];
       renderList();
     });
-  }, 150);
+  }, 250);
 }
 
 // Sincronização automática em tempo real se dados mudarem

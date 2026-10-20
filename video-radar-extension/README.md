@@ -33,14 +33,14 @@ Para cada vídeo ou player encontrado, o painel oferece:
   - Se for arquivo direto (`.mp4`, `.webm`), inicia o download imediatamente pelo navegador já com o título da aula/página.
   - Se for stream **`.m3u8`**, abre o **Baixador Integrado de HLS** da própria extensão (permite escolher a resolução da Master Playlist e baixar todos os segmentos no navegador).
 - **💻 Botão `yt-dlp`**:
-  - Gera e copia o comando completo já com o cabeçalho `--referer` da página/iframe original (essencial para Vimeo privado, Panda Video, Hotmart e Bunny Stream que bloqueiam downloads sem Referer) e `-N 8` (download acelerado em 8 conexões):
+  - Gera e copia o comando completo já com a pasta `Downloads` configurada como padrão (`-P "$HOME/Downloads"`), cabeçalho `--referer` da página/iframe original e `-N 8` (download acelerado em 8 conexões):
     ```bash
-    yt-dlp --referer "https://site-da-aula.com/" -N 8 -o "Titulo da Aula.%(ext)s" "URL_DO_VIDEO"
+    yt-dlp --referer "https://site-da-aula.com/" -N 8 -P "$HOME/Downloads" -o "Titulo da Aula.%(ext)s" "URL_DO_VIDEO"
     ```
 - **🎬 Botão `ffmpeg`**:
-  - Gera e copia o comando pronto com `-headers "Referer: ..."` e cópia direta sem recodificar (`-c copy`):
+  - Gera e copia o comando pronto salvando diretamente em `Downloads/` com `-headers "Referer: ..."` e cópia direta sem recodificar (`-c copy`):
     ```bash
-    ffmpeg -headers "Referer: https://site-da-aula.com/\r\n" -i "URL_DO_VIDEO" -c copy -bsf:a aac_adtstoasc "Titulo da Aula.mp4"
+    ffmpeg -headers "Referer: https://site-da-aula.com/\r\n" -i "URL_DO_VIDEO" -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/Titulo da Aula.mp4"
     ```
 - **🎯 Localizar**: Rola a página até o player correspondente e destaca a borda dele em roxo.
 

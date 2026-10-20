@@ -83,7 +83,32 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   }
 });
 
+function cleanMetaCdnVideoUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+  try {
+    const u = new URL(rawUrl);
+    if (/cdninstagram\.com|fbcdn\.net/i.test(u.hostname)) {
+      u.searchParams.delete('bytestart');
+      u.searchParams.delete('byteend');
+      return u.toString();
+    }
+  } catch {}
+  return rawUrl;
+}
+
 const PROVIDER_PATTERNS = [
+  {
+    name: 'Instagram',
+    badgeColor: '#e1306c',
+    regex: /(?:instagram\.com|cdninstagram\.com)/i,
+    extractEmbedUrl: (url) => url
+  },
+  {
+    name: 'Facebook',
+    badgeColor: '#1877f2',
+    regex: /(?:facebook\.com|fbcdn\.net)/i,
+    extractEmbedUrl: (url) => url
+  },
   {
     name: 'Spalla Video',
     badgeColor: '#0ea5e9',
@@ -205,11 +230,14 @@ function isIgnoredNoiseUrl(url) {
     return true;
   }
 
-  if (lower.includes('googlevideo.com/videoplayback')) {
+  if (lower.includes('googlevideo.com/videoplayback') || lower.includes('googlevideo.com/api/manifest')) {
     return true;
   }
-  if (/[?&](range|bytestart|byteend)=\d+/i.test(lower) && !/\.mp4(\?|$)/i.test(lower)) {
-    return true;
+  if (/[?&](range|bytestart|byteend)=\d+/i.test(lower)) {
+    const isMetaVideo = /cdninstagram\.com|fbcdn\.net/i.test(lower) && (/(\/v\/|\/o1\/v\/|\.mp4)/i.test(lower));
+    if (!isMetaVideo && !/\.mp4(\?|$)/i.test(lower)) {
+      return true;
+    }
   }
 
   if (/\/(analytics|telemetry|log|metrics|ping|heartbeat|thumb|thumbnail|storyboard)\b/i.test(lower)) {
@@ -342,8 +370,26 @@ function classifyVideoUrl(url, contentType = '', sourceType = 'network') {
     };
   }
 
+  if (/cdninstagram\.com|fbcdn\.net/i.test(lower) && (/(\/v\/|\/o1\/v\/|\.mp4)/i.test(lower) || ct.startsWith('video/'))) {
+    const isIg = /cdninstagram\.com|instagram/i.test(lower);
+    const clean = cleanMetaCdnVideoUrl(url);
+    return {
+      url: clean,
+      provider: isIg ? 'Instagram' : 'Facebook',
+      badgeColor: isIg ? '#e1306c' : '#1877f2',
+      category: 'direct',
+      format: 'Arquivo MP4',
+      isMasterPlaylist: false,
+      qualityHint: extractQualityHint(clean) || 'HD MP4',
+      priority: 100
+    };
+  }
+
   if (directMatch || isDirectVideoContentType) {
-    let cleanUrl = url.replace(/([?&])(bytestart|byteend|range)=[^&]+(&|$)/gi, '$1').replace(/[?&]$/, '');
+    let cleanUrl = url;
+    if (/[?&](bytestart|byteend|range)=/i.test(url)) {
+      cleanUrl = cleanMetaCdnVideoUrl(url);
+    }
     const ext = directMatch ? directMatch[1].toUpperCase() : 'MP4';
     return {
       url: cleanUrl,
@@ -404,6 +450,10 @@ function classifyVideoUrl(url, contentType = '', sourceType = 'network') {
 
 // Verifica se um link .mp4 vindo do DOM realmente existe no servidor (evita exibir links 404/desativados como o fallback do Spalla)
 async function verifyDirectUrlAlive(url, referer) {
+  if (!url) return false;
+  if (/twimg\.com|twitter\.com|x\.com|googlevideo\.com|youtube\.com|fbcdn\.net|cdninstagram\.com|instagram\.com|facebook\.com/i.test(url)) {
+    return true;
+  }
   if (deadUrlsCache.has(url)) return false;
   try {
     if (referer) await ensureRefererRule(url, referer);
@@ -746,6 +796,187 @@ async function upsertXMedia(tabId, mediaList, pageUrl, opts = {}) {
   if (changed) await saveTabMap(tabId, map);
 }
 
+async function upsertYouTubeMedia(tabId, ytData) {
+  if (!tabId || tabId < 0 || !ytData || !ytData.videoId) return;
+  const map = await getTabMap(tabId);
+  const key = `yt_${ytData.videoId}`;
+  const existing = map.get(key);
+
+  const durationSec = ytData.durationSec || (existing && existing.durationSec) || 0;
+  const duration = formatDurationSec(durationSec);
+  const title = (existing && existing.customTitle) || ytData.title || (existing && existing.title) || 'Vídeo do YouTube';
+  const thumbnailUrl = ytData.thumb || (existing && existing.thumbnailUrl) || `https://i.ytimg.com/vi/${ytData.videoId}/hqdefault.jpg`;
+  const pageUrl = ytData.pageUrl || `https://www.youtube.com/watch?v=${ytData.videoId}`;
+
+  if (ytData.hlsUrl) {
+    const item = {
+      key,
+      url: ytData.hlsUrl,
+      provider: 'YouTube',
+      badgeColor: '#ef4444',
+      category: 'stream',
+      format: 'HLS',
+      streamType: 'HLS',
+      isMasterPlaylist: true,
+      qualityHint: (existing && existing.qualityHint) || '1080p',
+      priority: 100,
+      title,
+      customTitle: (existing && existing.customTitle) || null,
+      pageUrl,
+      referer: 'https://www.youtube.com/',
+      frameUrl: '',
+      sizeBytes: null,
+      sourceType: 'network-verified',
+      detectedAt: existing ? existing.detectedAt : Date.now(),
+      thumbnailUrl,
+      durationSec,
+      duration,
+      variants: (existing && existing.variants && existing.variants.length > 0) ? existing.variants : [
+        { url: ytData.hlsUrl, kind: 'hls', label: '1080p', width: 1920, height: 1080 },
+        { url: ytData.hlsUrl, kind: 'hls', label: '720p', width: 1280, height: 720 },
+        { url: ytData.hlsUrl, kind: 'hls', label: '480p', width: 854, height: 480 },
+        { url: ytData.hlsUrl, kind: 'hls', label: '360p', width: 640, height: 360 }
+      ],
+      videoId: ytData.videoId
+    };
+
+    map.set(key, item);
+
+    // Remove entradas duplicadas "Vídeo detectado" da mesma aba
+    for (const [k, v] of map) {
+      if (k !== key && v && v.url && (v.url.includes('googlevideo.com/api/manifest') || v.url.includes('youtube.com/watch'))) {
+        map.delete(k);
+      }
+    }
+
+    await saveTabMap(tabId, map);
+    enrichHlsItem(tabId, key).catch(() => {});
+    return;
+  }
+
+  if (Array.isArray(ytData.directFormats) && ytData.directFormats.length > 0) {
+    const variants = ytData.directFormats.map((f) => ({
+      url: f.url,
+      kind: 'mp4',
+      label: f.qualityLabel,
+      bitrate: f.bitrate
+    }));
+
+    const item = {
+      key,
+      url: variants[0].url,
+      provider: 'YouTube',
+      badgeColor: '#ef4444',
+      category: 'direct',
+      format: 'MP4',
+      streamType: 'MP4',
+      qualityHint: variants[0].label,
+      priority: 100,
+      title,
+      customTitle: (existing && existing.customTitle) || null,
+      pageUrl,
+      referer: 'https://www.youtube.com/',
+      sourceType: 'network-verified',
+      detectedAt: existing ? existing.detectedAt : Date.now(),
+      thumbnailUrl,
+      durationSec,
+      duration,
+      variants,
+      videoId: ytData.videoId
+    };
+
+    map.set(key, item);
+    await saveTabMap(tabId, map);
+  }
+}
+
+async function upsertMetaMedia(tabId, metaItem, pageUrl, pageTitle) {
+  if (!tabId || tabId < 0 || !metaItem) return;
+
+  const rawVariants = Array.isArray(metaItem.variants) ? metaItem.variants : [];
+  const variants = rawVariants
+    .filter((v) => v && v.url)
+    .map((v) => ({
+      url: cleanMetaCdnVideoUrl(v.url),
+      kind: 'mp4',
+      label: v.quality || (v.height ? `${v.height}p` : 'HD'),
+      width: v.width || 0,
+      height: v.height || 0
+    }));
+
+  if (variants.length === 0) return;
+
+  const isFb = metaItem.platform === 'Facebook' || /facebook\.com|fbcdn\.net/i.test(pageUrl || '');
+  const platform = isFb ? 'Facebook' : 'Instagram';
+  const badgeColor = isFb ? '#1877f2' : '#e1306c';
+  const mediaId = metaItem.id || metaItem.code || Math.random().toString(36).slice(2, 8);
+  const key = `meta_${isFb ? 'fb' : 'ig'}_${mediaId}`;
+
+  const map = await getTabMap(tabId);
+  const existing = map.get(key);
+
+  let title = metaItem.title;
+  if (!title) {
+    if (metaItem.user && metaItem.caption) {
+      const cleanCap = metaItem.caption.replace(/#\S+/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      title = `${platform} - @${metaItem.user}: ${cleanCap || 'Vídeo'}`;
+    } else if (metaItem.user) {
+      title = `${platform} - @${metaItem.user} (${metaItem.code || metaItem.id || 'Vídeo'})`;
+    } else if (metaItem.caption) {
+      title = `${platform} - ${metaItem.caption.replace(/\s+/g, ' ').trim().slice(0, 60)}`;
+    } else {
+      title = (pageTitle && !pageTitle.toLowerCase().startsWith('instagram') && !pageTitle.toLowerCase().startsWith('facebook'))
+        ? `${platform} - ${pageTitle.slice(0, 60)}`
+        : `${platform} Vídeo (${metaItem.code || metaItem.id || 'Reel'})`;
+    }
+  }
+
+  let durationFormatted = null;
+  if (metaItem.duration && !isNaN(metaItem.duration) && metaItem.duration > 0) {
+    const s = Math.round(metaItem.duration);
+    const mins = Math.floor(s / 60);
+    const secs = s % 60;
+    durationFormatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+
+  const bestVariant = variants[0];
+  const item = {
+    key,
+    url: bestVariant.url,
+    provider: `${platform} MP4`,
+    badgeColor,
+    category: 'direct',
+    format: 'MP4',
+    streamType: 'MP4',
+    qualityHint: bestVariant.label || 'HD MP4',
+    priority: 100,
+    title,
+    customTitle: (existing && existing.customTitle) || null,
+    pageUrl: pageUrl || '',
+    referer: pageUrl || (isFb ? 'https://www.facebook.com/' : 'https://www.instagram.com/'),
+    sourceType: 'meta-hook',
+    detectedAt: existing ? existing.detectedAt : Date.now(),
+    thumbnailUrl: metaItem.thumbnailUrl || (existing && existing.thumbnailUrl) || null,
+    duration: durationFormatted || (existing && existing.duration) || null,
+    variants
+  };
+
+  map.set(key, item);
+
+  // Remove entradas genéricas "Vídeo Direto" sem thumbnail que correspondam a esse mesmo vídeo no CDN
+  for (const [k, v] of map) {
+    if (k !== key && v && v.url && (/cdninstagram\.com|fbcdn\.net/i.test(v.url)) && (!v.thumbnailUrl || v.provider === 'Vídeo Direto')) {
+      const cleanK = cleanMetaCdnVideoUrl(v.url);
+      const cleanBest = cleanMetaCdnVideoUrl(bestVariant.url);
+      if (cleanK.split('?')[0] === cleanBest.split('?')[0]) {
+        map.delete(k);
+      }
+    }
+  }
+
+  await saveTabMap(tabId, map);
+}
+
 // ---------- Leitura de manifestos HLS (variantes + duração) ----------
 
 const hlsInfoCache = new Map(); // url -> Promise<info|null>
@@ -969,7 +1200,8 @@ async function registerDetectedVideo(tabId, rawItem) {
   const referer = rawItem.referer || rawItem.pageUrl || '';
 
   // Se for um arquivo .mp4 vindo do DOM/script (não confirmado por resposta HTTP 200/206 de vídeo), verifica se o link não é 404
-  if (classification.category === 'direct' && rawItem.sourceType !== 'network-verified') {
+  const isTrustedCdn = /twimg\.com|twitter\.com|x\.com|googlevideo\.com|youtube\.com|fbcdn\.net|cdninstagram\.com|instagram\.com|facebook\.com/i.test(classification.url);
+  if (classification.category === 'direct' && rawItem.sourceType !== 'network-verified' && !isTrustedCdn) {
     const alive = await verifyDirectUrlAlive(classification.url, referer);
     if (!alive) {
       await removeDetectedVideo(tabId, classification.url);
@@ -1104,8 +1336,11 @@ chrome.webRequest.onHeadersReceived.addListener(
       }
     }
 
-    if (contentLength !== null && contentLength < 250 * 1024 && contentType.startsWith('video/')) {
-      return;
+    const isMetaCdn = /cdninstagram\.com|fbcdn\.net/i.test(details.url);
+    if (!isMetaCdn && !/[?&](bytestart|range)=\d+/i.test(details.url)) {
+      if (contentLength !== null && contentLength < 250 * 1024 && contentType.startsWith('video/')) {
+        return;
+      }
     }
 
     const reqMeta = requestHeadersMap.get(details.requestId) || {};
@@ -1164,6 +1399,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (tabId && tabId > 0 && Array.isArray(message.media)) {
       (async () => {
         await upsertXMedia(tabId, message.media, message.pageUrl || (sender.tab && sender.tab.url) || '');
+        sendResponse({ ok: true });
+      })();
+      return true;
+    }
+    sendResponse({ ok: false });
+    return false;
+  }
+
+  if (message.action === 'ADD_YOUTUBE_MEDIA') {
+    const tabId = sender.tab ? sender.tab.id : message.tabId;
+    if (tabId && tabId > 0 && message.data) {
+      (async () => {
+        await upsertYouTubeMedia(tabId, message.data);
         sendResponse({ ok: true });
       })();
       return true;
@@ -1294,18 +1542,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'ADD_META_MEDIA') {
+    const tabId = sender.tab ? sender.tab.id : message.tabId;
+    if (!tabId || tabId < 0) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    (async () => {
+      const items = Array.isArray(message.media) ? message.media : [];
+      for (const item of items) {
+        await upsertMetaMedia(tabId, item, message.pageUrl, message.pageTitle);
+      }
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
   if (message.action === 'START_DIRECT_DOWNLOAD') {
     (async () => {
       const { url, filename, referer, tabId } = message;
+      const downloadTargetUrl = cleanMetaCdnVideoUrl(url);
+
       if (referer) {
-        await ensureRefererRule(url, referer);
+        await ensureRefererRule(downloadTargetUrl, referer);
       }
 
       // Se não for blob: da própria extensão, verifica antes se o arquivo direto realmente existe no servidor.
-      // Ignora probe sintético de Range em CDNs confiáveis (Twitter/X, YouTube) onde Range de SW pode falhar com CORS/403.
-      const isTrustedCdn = /twimg\.com|twitter\.com|x\.com|googlevideo\.com|youtube\.com/i.test(url);
-      if (!url.startsWith('blob:') && !isTrustedCdn) {
-        const alive = await verifyDirectUrlAlive(url, referer);
+      // Ignora probe sintético de Range em CDNs confiáveis (Twitter/X, YouTube, Meta/Instagram/Facebook) onde Range de SW pode falhar com CORS/403.
+      const isTrustedCdn = /twimg\.com|twitter\.com|x\.com|googlevideo\.com|youtube\.com|fbcdn\.net|cdninstagram\.com|instagram\.com|facebook\.com/i.test(downloadTargetUrl);
+      if (!downloadTargetUrl.startsWith('blob:') && !isTrustedCdn) {
+        const alive = await verifyDirectUrlAlive(downloadTargetUrl, referer);
         if (!alive) {
           if (tabId) await removeDetectedVideo(tabId, url);
           sendResponse({
@@ -1322,11 +1588,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         finalName += '.mp4';
       }
 
-      downloadFilenameByUrl.set(url, finalName);
+      downloadFilenameByUrl.set(downloadTargetUrl, finalName);
 
       chrome.downloads.download(
         {
-          url,
+          url: downloadTargetUrl,
           filename: finalName,
           conflictAction: 'uniquify'
         },

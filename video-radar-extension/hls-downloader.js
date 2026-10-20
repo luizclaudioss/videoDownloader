@@ -456,17 +456,17 @@ btnStart.addEventListener('click', downloadAndConvertToMp4);
 btnCopyYtdlp.addEventListener('click', async () => {
   const cleanName = (titleInput.value || 'video').replace(/"/g, '');
   const refPart = refererUrl ? `--referer "${refererUrl}" ` : '';
-  const cmd = `yt-dlp ${refPart}-N 8 --merge-output-format mp4 -o "${cleanName}.%(ext)s" "${initialUrl}"`;
+  const cmd = `yt-dlp ${refPart}-N 8 --merge-output-format mp4 -P "$HOME/Downloads" -o "${cleanName}.%(ext)s" "${initialUrl}"`;
   await navigator.clipboard.writeText(cmd);
-  statusText.textContent = '✅ Comando yt-dlp copiado para a área de transferência!';
+  statusText.textContent = '✅ Comando yt-dlp copiado (salvará na pasta Downloads)!';
 });
 
 btnCopyFfmpeg.addEventListener('click', async () => {
   const cleanName = (titleInput.value || 'video').replace(/"/g, '');
   const refPart = refererUrl ? `-headers "Referer: ${refererUrl}\\r\\n" ` : '';
-  const cmd = `ffmpeg ${refPart}-i "${initialUrl}" -c copy -bsf:a aac_adtstoasc "${cleanName}.mp4"`;
+  const cmd = `ffmpeg ${refPart}-i "${initialUrl}" -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/${cleanName}.mp4"`;
   await navigator.clipboard.writeText(cmd);
-  statusText.textContent = '✅ Comando ffmpeg copiado para a área de transferência!';
+  statusText.textContent = '✅ Comando ffmpeg copiado (salvará na pasta Downloads)!';
 });
 
 inspectM3u8(initialUrl);
