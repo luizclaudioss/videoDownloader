@@ -173,7 +173,7 @@ function buildYtDlpCommand(item) {
   const targetUrl = item.selectedVariantUrl || item.url;
 
   if (/youtube\.com|youtu\.be/i.test(targetUrl)) {
-    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -P "$HOME/Downloads" -o "${filename}.%(ext)s" "${targetUrl}"`;
+    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o "${filename}.%(ext)s" "${targetUrl}"`;
   }
 
   const parts = ['yt-dlp'];
@@ -182,7 +182,7 @@ function buildYtDlpCommand(item) {
   }
   parts.push('-N 8');
   parts.push('--merge-output-format mp4');
-  parts.push('-P "$HOME/Downloads"');
+  parts.push('-P "$HOME/Downloads/VideoRadar"');
   parts.push(`-o "${filename}.%(ext)s"`);
   parts.push(`"${targetUrl}"`);
 
@@ -200,7 +200,7 @@ function buildFfmpegCommand(item) {
   }
   parts.push(`-i "${targetUrl}"`);
   parts.push('-c copy -bsf:a aac_adtstoasc');
-  parts.push(`"$HOME/Downloads/${filename}.mp4"`);
+  parts.push(`"$HOME/Downloads/VideoRadar/${filename}.mp4"`);
 
   return parts.join(' ');
 }

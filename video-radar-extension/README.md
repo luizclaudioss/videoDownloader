@@ -19,7 +19,7 @@ Extensão de navegador (Manifest V3 — compatível com **Google Chrome, Brave, 
    - **Hotmart Player** (`player.hotmart.com`, `cf-embed.play.hotmart.com`)
    - **Cloudflare Stream**, **Loom**, **Vidyard**, **Smartplayer / Scaleup**, **Dailymotion**
 3. **Streams de Vídeo (Tráfego de Rede + Scripts Inline)**:
-   - **HLS (`.m3u8`)** — identifica tanto a *Master Playlist* quanto as playlists de resolução (`1080p`, `720p`, etc.) e filtra automaticamente os pedaços `.ts` para não poluir a lista.
+   - **HLS (`.m3u8`)** — identifica tanto a _Master Playlist_ quanto as playlists de resolução (`1080p`, `720p`, etc.) e filtra automaticamente os pedaços `.ts` para não poluir a lista.
    - **DASH (`.mpd`)**
 4. **Arquivos de Vídeo Diretos**:
    - **`.mp4`, `.webm`, `.mov`, `.m4v`, `.mkv`** e tags `<video>` / `<source>`, exibindo o tamanho em MB quando informado pelo servidor.
@@ -29,18 +29,19 @@ Extensão de navegador (Manifest V3 — compatível com **Google Chrome, Brave, 
 ## 🚀 Recursos de Download e Cópia Rápida
 
 Para cada vídeo ou player encontrado, o painel oferece:
+
 - **⬇️ Baixar**:
   - Se for arquivo direto (`.mp4`, `.webm`), inicia o download imediatamente pelo navegador já com o título da aula/página.
   - Se for stream **`.m3u8`**, abre o **Baixador Integrado de HLS** da própria extensão (permite escolher a resolução da Master Playlist e baixar todos os segmentos no navegador).
 - **💻 Botão `yt-dlp`**:
-  - Gera e copia o comando completo já com a pasta `Downloads` configurada como padrão (`-P "$HOME/Downloads"`), cabeçalho `--referer` da página/iframe original e `-N 8` (download acelerado em 8 conexões):
+  - Gera e copia o comando completo já com a pasta `Downloads/VideoRadar` configurada como padrão (`-P "$HOME/Downloads/VideoRadar"`), cabeçalho `--referer` da página/iframe original e `-N 8` (download acelerado em 8 conexões):
     ```bash
-    yt-dlp --referer "https://site-da-aula.com/" -N 8 -P "$HOME/Downloads" -o "Titulo da Aula.%(ext)s" "URL_DO_VIDEO"
+    yt-dlp --referer "https://site-da-aula.com/" -N 8 -P "$HOME/Downloads/VideoRadar" -o "Titulo da Aula.%(ext)s" "URL_DO_VIDEO"
     ```
 - **🎬 Botão `ffmpeg`**:
-  - Gera e copia o comando pronto salvando diretamente em `Downloads/` com `-headers "Referer: ..."` e cópia direta sem recodificar (`-c copy`):
+  - Gera e copia o comando pronto salvando diretamente em `Downloads/VideoRadar/` com `-headers "Referer: ..."` e cópia direta sem recodificar (`-c copy`):
     ```bash
-    ffmpeg -headers "Referer: https://site-da-aula.com/\r\n" -i "URL_DO_VIDEO" -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/Titulo da Aula.mp4"
+    ffmpeg -headers "Referer: https://site-da-aula.com/\r\n" -i "URL_DO_VIDEO" -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/VideoRadar/Titulo da Aula.mp4"
     ```
 - **🎯 Localizar**: Rola a página até o player correspondente e destaca a borda dele em roxo.
 
@@ -52,7 +53,7 @@ Para cada vídeo ou player encontrado, o painel oferece:
    - **Chrome**: `chrome://extensions`
    - **Brave**: `brave://extensions`
    - **Edge**: `edge://extensions`
-2. No canto superior direito, ative a chave **Modo do desenvolvedor** (*Developer mode*).
-3. Clique no botão **Carregar sem compactação** (*Load unpacked*) no canto superior esquerdo.
+2. No canto superior direito, ative a chave **Modo do desenvolvedor** (_Developer mode_).
+3. Clique no botão **Carregar sem compactação** (_Load unpacked_) no canto superior esquerdo.
 4. Selecione a pasta **`video-finder-extension`**.
 5. Pronto! Fixe o ícone do **Video Radar** (ícone roxo de vídeo) na barra do navegador.
