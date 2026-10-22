@@ -98,4 +98,66 @@
       setTimeout(sendUpdate, 500);
     }
   }, true);
+
+  // ---------- Download dentro da página (origem youtube.com, com cookies/headers corretos) ----------
+  let overlayEl = null;
+  function showOverlay(text, done) {
+    if (!overlayEl) {
+      overlayEl = document.createElement('div');
+      overlayEl.style.cssText =
+        'position:fixed;right:16px;bottom:16px;z-index:2147483647;background:#111827;color:#fff;' +
+        'padding:10px 14px;border-radius:8px;font:13px sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.4);max-width:320px';
+      document.documentElement.appendChild(overlayEl);
+    }
+    overlayEl.textContent = text;
+    if (done) setTimeout(() => { if (overlayEl) { overlayEl.remove(); overlayEl = null; } }, 5000);
+  }
+
+  async function fetchRange(url, start, end) {
+    const sep = url.includes('?') ? '&' : '?';
+    const res = await fetch(`${url}${sep}range=${start}-${end}`);
+    if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  async function pageDownload(url, filename) {
+    try {
+      showOverlay('⏳ Video Radar: iniciando download...');
+      const CHUNK = 5 * 1024 * 1024;
+      const parts = [];
+      let start = 0;
+      let total = 0;
+      const clenMatch = url.match(/[?&]clen=(\d+)/);
+      if (clenMatch) total = parseInt(clenMatch[1], 10);
+
+      for (;;) {
+        const end = start + CHUNK - 1;
+        const buf = await fetchRange(url, start, end);
+        if (buf.length === 0) break;
+        parts.push(buf);
+        start += buf.length;
+        if (total) showOverlay(`⏳ Baixando ${Math.round((start / total) * 100)}% — ${filename}`);
+        else showOverlay(`⏳ Baixando ${(start / 1048576).toFixed(1)} MB — ${filename}`);
+        if (buf.length < CHUNK || (total && start >= total)) break;
+      }
+
+      if (start < 100 * 1024) throw new Error('arquivo inválido');
+      const blob = new Blob(parts, { type: 'video/mp4' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      showOverlay(`✅ Download concluído: ${filename}`, true);
+    } catch (err) {
+      showOverlay(`❌ Falha no download (${err.message}). Tente outra resolução.`, true);
+    }
+  }
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.source !== 'video-radar-yt-download') return;
+    pageDownload(e.data.url, e.data.filename || 'youtube.mp4');
+  });
 })();

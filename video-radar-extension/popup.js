@@ -319,6 +319,22 @@ async function handleDirectDownload(item) {
     return;
   }
 
+  // 1.5 Vídeo do YouTube (googlevideo): só funciona se baixado de dentro da página do YouTube
+  if (/googlevideo\.com\/videoplayback/i.test(targetUrl) && currentTab && currentTab.id) {
+    chrome.tabs.sendMessage(
+      currentTab.id,
+      { action: 'YT_PAGE_DOWNLOAD', url: targetUrl, filename: `${sanitizeFilename(title)}.mp4` },
+      () => {
+        if (chrome.runtime.lastError) {
+          showToast('Recarregue a aba do YouTube (F5) e tente de novo.', 3500);
+        } else {
+          showToast('⏳ Baixando pela página do YouTube — acompanhe o progresso no canto da tela.', 3500);
+        }
+      }
+    );
+    return;
+  }
+
   // 2. Se for Arquivo Direto (.mp4, .webm, .mov, etc.)
   if (/\.(mp4|webm|mov|m4v)(\?|$)/i.test(targetUrl) || item.category === 'direct') {
     startBrowserMp4Download(targetUrl, title, referer);
@@ -599,7 +615,7 @@ function renderList() {
         // Preenche as opções de qualidade
         qualityMenu.innerHTML = '';
         if (hasVariants) {
-          item.variants.forEach((v) => {
+          [...item.variants].sort((a, b) => (b.height || 0) - (a.height || 0) || (b.bitrate || 0) - (a.bitrate || 0)).forEach((v) => {
             const opt = document.createElement('div');
             const isSelected = (item.selectedVariantUrl || item.url) === v.url;
             opt.className = `dropdown-item ${isSelected ? 'active' : ''}`;

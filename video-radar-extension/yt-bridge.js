@@ -17,4 +17,15 @@
       // Ignore context invalidated
     }
   });
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg && msg.action === 'YT_PAGE_DOWNLOAD') {
+      window.postMessage(
+        { source: 'video-radar-yt-download', url: msg.url, filename: msg.filename },
+        window.location.origin
+      );
+      sendResponse({ ok: true });
+    }
+    return false;
+  });
 })();

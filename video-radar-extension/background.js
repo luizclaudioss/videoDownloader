@@ -808,6 +808,13 @@ async function upsertYouTubeMedia(tabId, ytData) {
   const thumbnailUrl = ytData.thumb || (existing && existing.thumbnailUrl) || `https://i.ytimg.com/vi/${ytData.videoId}/hqdefault.jpg`;
   const pageUrl = ytData.pageUrl || `https://www.youtube.com/watch?v=${ytData.videoId}`;
 
+  // Remove cards genéricos da URL da página (baixariam HTML/.txt) e duplicatas do mesmo vídeo
+  for (const [k, v] of map) {
+    if (k !== key && v && v.url && (v.url.includes('googlevideo.com/api/manifest') || /youtube\.com\/watch|youtu\.be\//i.test(v.url))) {
+      map.delete(k);
+    }
+  }
+
   if (ytData.hlsUrl) {
     const item = {
       key,
@@ -818,7 +825,7 @@ async function upsertYouTubeMedia(tabId, ytData) {
       format: 'HLS',
       streamType: 'HLS',
       isMasterPlaylist: true,
-      qualityHint: (existing && existing.qualityHint) || '1080p',
+      qualityHint: (existing && existing.qualityHint) || 'Auto',
       priority: 100,
       title,
       customTitle: (existing && existing.customTitle) || null,
@@ -832,11 +839,10 @@ async function upsertYouTubeMedia(tabId, ytData) {
       durationSec,
       duration,
       variants: (existing && existing.variants && existing.variants.length > 0) ? existing.variants : [
-        { url: ytData.hlsUrl, kind: 'hls', label: '1080p', width: 1920, height: 1080 },
-        { url: ytData.hlsUrl, kind: 'hls', label: '720p', width: 1280, height: 720 },
-        { url: ytData.hlsUrl, kind: 'hls', label: '480p', width: 854, height: 480 },
-        { url: ytData.hlsUrl, kind: 'hls', label: '360p', width: 640, height: 360 }
+        { url: ytData.hlsUrl, kind: 'hls', label: 'Auto', width: 0, height: 0 }
       ],
+      selectedVariantUrl: (existing && existing.selectedVariantUrl) || undefined,
+      hlsEnriched: Boolean(existing && existing.hlsEnriched),
       videoId: ytData.videoId
     };
 
@@ -1184,6 +1190,12 @@ async function registerDetectedVideo(tabId, rawItem) {
     rawItem.sourceType || 'network'
   );
   if (!classification) return;
+
+  // Na própria página do YouTube o vídeo real vem do yt-hook; o link /watch não é um arquivo baixável
+  if (/youtube\.com\/watch|youtu\.be\//i.test(classification.url) &&
+      /(?:^|\.)youtube\.com\//i.test((rawItem.pageUrl || rawItem.frameUrl || rawItem.referer || '').replace(/^https?:\/\//, '')) ) {
+    return;
+  }
 
   // X / Twitter: playlists de variante (avc1 / mp4a) nunca viram card; se o vídeo já foi agrupado, ignora a URL crua
   const xMid = xMediaIdFromUrl(classification.url);
