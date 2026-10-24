@@ -315,7 +315,72 @@ function isHlsStream(item, targetUrl) {
   return false;
 }
 
+const HELPER_URL = 'http://127.0.0.1:47654';
+const YT_HEIGHTS = [
+  { height: 2160, label: '4K · 2160p' },
+  { height: 1440, label: '1440p' },
+  { height: 1080, label: '1080p' },
+  { height: 720, label: '720p' },
+  { height: 480, label: '480p' },
+  { height: 360, label: '360p' }
+];
+
+function isYouTubeItem(item) {
+  if (!item) return false;
+  return (
+    Boolean(item.videoId) ||
+    /youtube\.com|youtu\.be|googlevideo\.com/i.test(item.url || '') ||
+    String(item.provider || '').toLowerCase().includes('youtube')
+  );
+}
+
+function youTubePageUrl(item) {
+  if (item.videoId) return `https://www.youtube.com/watch?v=${item.videoId}`;
+  if (item.pageUrl && /youtube\.com|youtu\.be/i.test(item.pageUrl)) return item.pageUrl;
+  if (currentTab && /youtube\.com\/(watch|shorts)/i.test(currentTab.url || '')) return currentTab.url;
+  return item.url;
+}
+
+async function helperAvailable() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1200);
+    const res = await fetch(`${HELPER_URL}/ping`, { signal: ctrl.signal });
+    clearTimeout(t);
+    const data = await res.json();
+    return Boolean(data && data.ok && data.ytdlp);
+  } catch {
+    return false;
+  }
+}
+
+async function downloadViaHelper(url, height, title, referer) {
+  try {
+    const res = await fetch(`${HELPER_URL}/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, height, title, referer })
+    });
+    const data = await res.json();
+    return Boolean(data && data.ok);
+  } catch {
+    return false;
+  }
+}
+
 async function handleDirectDownload(item) {
+  if (isYouTubeItem(item) && (await helperAvailable())) {
+    const height = item.selectedHeight || 1080;
+    const ok = await downloadViaHelper(youTubePageUrl(item), height, item.title, item.referer);
+    if (ok) {
+      showToast(`⬇️ Baixando em até ${height}p (Downloads/VideoRadar). Você será avisado ao concluir.`, 4500);
+      return;
+    }
+  }
+  return handleDirectDownloadBrowser(item);
+}
+
+async function handleDirectDownloadBrowser(item) {
   const rawTargetUrl = item.selectedVariantUrl || item.url;
   const targetUrl = cleanMetaCdnVideoUrl(rawTargetUrl);
   const referer = item.referer || item.pageUrl || (currentTab ? currentTab.url : '');
@@ -466,6 +531,7 @@ function renderList() {
       currentQuality = isHls ? 'Auto' : 'Original';
     }
 
+    if (isYouTube) currentQuality = item.selectedHeight ? `${item.selectedHeight}p` : '1080p';
     const hasVariants = Array.isArray(item.variants) && item.variants.length > 0;
     const hasThumb = Boolean(item.thumbnailUrl);
     const platformIcon = getPlatformIcon(item.provider);
@@ -520,7 +586,7 @@ function renderList() {
             <button class="quality-selector-btn" title="Selecionar resolução / qualidade">
               <span class="quality-ext">${formatExt}</span>
               <span class="quality-tag">${escapeHtml(currentQuality)}</span>
-              <span class="quality-arrow">${hasVariants ? '⇅' : '▾'}</span>
+              <span class="quality-arrow">${hasVariants || isYouTube ? '⇅' : '▾'}</span>
             </button>
             <div class="dropdown-menu hidden quality-menu"></div>
           </div>
@@ -623,7 +689,32 @@ function renderList() {
       if (isHidden) {
         // Preenche as opções de qualidade
         qualityMenu.innerHTML = '';
-        if (hasVariants) {
+        if (isYouTube) {
+          YT_HEIGHTS.forEach((h) => {
+            const opt = document.createElement('div');
+            const isSelected = (item.selectedHeight || 1080) === h.height;
+            opt.className = `dropdown-item ${isSelected ? 'active' : ''}`;
+            opt.innerHTML = `<span>${escapeHtml(h.label)}</span><span class="quality-tag">${h.height}p</span>`;
+            opt.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              item.selectedHeight = h.height;
+              item.qualityHint = `${h.height}p`;
+              qualityTagEl.textContent = `${h.height}p`;
+              if (currentTab && currentTab.id) {
+                chrome.runtime.sendMessage({
+                  action: 'SELECT_VIDEO_VARIANT',
+                  tabId: currentTab.id,
+                  key: item.key || item.url,
+                  qualityHint: `${h.height}p`,
+                  selectedHeight: h.height
+                });
+              }
+              closeAllDropdowns();
+              showToast(`Resolução alterada para ${h.height}p!`);
+            });
+            qualityMenu.appendChild(opt);
+          });
+        } else if (hasVariants) {
           [...item.variants].sort((a, b) => (b.height || 0) - (a.height || 0) || (b.bitrate || 0) - (a.bitrate || 0)).forEach((v) => {
             const opt = document.createElement('div');
             const isSelected = (item.selectedVariantUrl || item.url) === v.url;

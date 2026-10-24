@@ -842,6 +842,7 @@ async function upsertYouTubeMedia(tabId, ytData) {
         { url: ytData.hlsUrl, kind: 'hls', label: 'Auto', width: 0, height: 0 }
       ],
       selectedVariantUrl: (existing && existing.selectedVariantUrl) || undefined,
+      selectedHeight: (existing && existing.selectedHeight) || undefined,
       hlsEnriched: Boolean(existing && existing.hlsEnriched),
       videoId: ytData.videoId
     };
@@ -888,6 +889,7 @@ async function upsertYouTubeMedia(tabId, ytData) {
       durationSec,
       duration,
       variants,
+      selectedHeight: (existing && existing.selectedHeight) || undefined,
       videoId: ytData.videoId
     };
 
@@ -1472,14 +1474,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'SELECT_VIDEO_VARIANT') {
     const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
-    const { key, variantUrl, qualityHint } = message;
-    if (tabId && key && variantUrl) {
+    const { key, variantUrl, qualityHint, selectedHeight } = message;
+    if (tabId && key) {
       (async () => {
         const map = await getTabMap(tabId);
         const item = map.get(key);
         if (item) {
-          item.selectedVariantUrl = variantUrl;
+          if (variantUrl) item.selectedVariantUrl = variantUrl;
           if (qualityHint) item.qualityHint = qualityHint;
+          if (selectedHeight) item.selectedHeight = selectedHeight;
           await saveTabMap(tabId, map);
         }
         sendResponse({ ok: true });
