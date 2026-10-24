@@ -453,20 +453,24 @@ async function downloadAndConvertToMp4() {
 
 btnStart.addEventListener('click', downloadAndConvertToMp4);
 
+function shq(str) {
+  return `'${String(str).replace(/'/g, `'\\''`)}'`;
+}
+
 btnCopyYtdlp.addEventListener('click', async () => {
-  const cleanName = (titleInput.value || 'video').replace(/"/g, '');
-  const refPart = refererUrl ? `--referer "${refererUrl}" ` : '';
-  const cmd = `yt-dlp ${refPart}-N 8 --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o "${cleanName}.%(ext)s" "${initialUrl}"`;
+  const cleanName = titleInput.value || 'video';
+  const refPart = refererUrl ? `--referer ${shq(refererUrl)} ` : '';
+  const cmd = `yt-dlp ${refPart}-N 8 --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(cleanName + '.%(ext)s')} ${shq(initialUrl)}`;
   await navigator.clipboard.writeText(cmd);
-  statusText.textContent = '✅ Comando yt-dlp copiado (salvará na pasta Downloads)!';
+  statusText.textContent = '✅ Comando yt-dlp copiado (salvará em Downloads/VideoRadar)!';
 });
 
 btnCopyFfmpeg.addEventListener('click', async () => {
-  const cleanName = (titleInput.value || 'video').replace(/"/g, '');
-  const refPart = refererUrl ? `-headers "Referer: ${refererUrl}\\r\\n" ` : '';
-  const cmd = `ffmpeg ${refPart}-i "${initialUrl}" -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/VideoRadar/${cleanName}.mp4"`;
+  const cleanName = titleInput.value || 'video';
+  const refPart = refererUrl ? `-headers ${shq('Referer: ' + refererUrl + '\r\n')} ` : '';
+  const cmd = `ffmpeg ${refPart}-i ${shq(initialUrl)} -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/VideoRadar/"${shq(cleanName + '.mp4')}`;
   await navigator.clipboard.writeText(cmd);
-  statusText.textContent = '✅ Comando ffmpeg copiado (salvará na pasta Downloads)!';
+  statusText.textContent = '✅ Comando ffmpeg copiado (salvará em Downloads/VideoRadar)!';
 });
 
 inspectM3u8(initialUrl);

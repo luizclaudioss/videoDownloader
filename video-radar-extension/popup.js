@@ -167,24 +167,33 @@ async function loadSyncedData() {
   }
 }
 
+// Escapa para shell com aspas simples (evita erro "zsh: Ambiguous history reference" por causa de "!" e outros símbolos)
+function shq(str) {
+  return `'${String(str).replace(/'/g, `'\\''`)}'`;
+}
+
 function buildYtDlpCommand(item) {
   const filename = sanitizeFilename(item.title);
   const ref = item.referer || item.pageUrl || '';
   const targetUrl = item.selectedVariantUrl || item.url;
 
-  if (/youtube\.com|youtu\.be/i.test(targetUrl)) {
-    return `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o "${filename}.%(ext)s" "${targetUrl}"`;
+  const isYt = /youtube\.com|youtu\.be|googlevideo\.com/i.test(targetUrl) || item.videoId;
+  if (isYt) {
+    const ytUrl = item.videoId
+      ? `https://www.youtube.com/watch?v=${item.videoId}`
+      : (item.pageUrl && /youtube\.com|youtu\.be/i.test(item.pageUrl) ? item.pageUrl : targetUrl);
+    return `yt-dlp -f 'bv*+ba/b' --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(filename + '.%(ext)s')} ${shq(ytUrl)}`;
   }
 
   const parts = ['yt-dlp'];
   if (ref && ref.startsWith('http')) {
-    parts.push(`--referer "${ref.replace(/"/g, '\\"')}"`);
+    parts.push(`--referer ${shq(ref)}`);
   }
   parts.push('-N 8');
   parts.push('--merge-output-format mp4');
   parts.push('-P "$HOME/Downloads/VideoRadar"');
-  parts.push(`-o "${filename}.%(ext)s"`);
-  parts.push(`"${targetUrl}"`);
+  parts.push(`-o ${shq(filename + '.%(ext)s')}`);
+  parts.push(shq(targetUrl));
 
   return parts.join(' ');
 }
@@ -196,11 +205,11 @@ function buildFfmpegCommand(item) {
   const parts = ['ffmpeg'];
 
   if (ref && ref.startsWith('http')) {
-    parts.push(`-headers "Referer: ${ref.replace(/"/g, '\\"')}\\r\\n"`);
+    parts.push(`-headers ${shq('Referer: ' + ref + '\r\n')}`);
   }
-  parts.push(`-i "${targetUrl}"`);
+  parts.push(`-i ${shq(targetUrl)}`);
   parts.push('-c copy -bsf:a aac_adtstoasc');
-  parts.push(`"$HOME/Downloads/VideoRadar/${filename}.mp4"`);
+  parts.push(`"$HOME/Downloads/VideoRadar/"${shq(filename + '.mp4')}`);
 
   return parts.join(' ');
 }
