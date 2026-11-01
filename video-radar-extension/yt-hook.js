@@ -59,7 +59,17 @@
         }
       }
 
-      if (!hlsUrl && directFormats.length === 0) {
+      // 3. Resoluções reais disponíveis no YouTube
+      const availableHeightsSet = new Set();
+      if (Array.isArray(sd.formats)) {
+        sd.formats.forEach((f) => { if (f.height) availableHeightsSet.add(f.height); });
+      }
+      if (Array.isArray(sd.adaptiveFormats)) {
+        sd.adaptiveFormats.forEach((f) => { if (f.height) availableHeightsSet.add(f.height); });
+      }
+      const availableHeights = Array.from(availableHeightsSet).sort((a, b) => b - a);
+
+      if (!hlsUrl && directFormats.length === 0 && availableHeights.length === 0) {
         return null;
       }
 
@@ -70,6 +80,7 @@
         thumb,
         hlsUrl,
         directFormats,
+        availableHeights,
         pageUrl: window.location.href
       };
     } catch {

@@ -844,6 +844,7 @@ async function upsertYouTubeMedia(tabId, ytData) {
       selectedVariantUrl: (existing && existing.selectedVariantUrl) || undefined,
       selectedHeight: (existing && existing.selectedHeight) || undefined,
       hlsEnriched: Boolean(existing && existing.hlsEnriched),
+      availableHeights: ytData.availableHeights || (existing && existing.availableHeights) || [],
       videoId: ytData.videoId
     };
 
@@ -889,6 +890,7 @@ async function upsertYouTubeMedia(tabId, ytData) {
       durationSec,
       duration,
       variants,
+      availableHeights: ytData.availableHeights || (existing && existing.availableHeights) || [],
       selectedHeight: (existing && existing.selectedHeight) || undefined,
       videoId: ytData.videoId
     };

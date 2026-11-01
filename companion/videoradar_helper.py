@@ -73,11 +73,11 @@ def make_quicktime_compatible(filepath, job_id=None):
                 acodec = s.get("codec_name")
 
         # QuickTime no macOS (Apple Silicon M-series) suporta nativamente H.264, HEVC e AV1
-        needs_v = vcodec not in ("h264", "hevc", "av01")
+        needs_v = vcodec not in ("h264", "hevc", "av1", "av01")
         needs_a = acodec not in ("aac",)
 
         if not needs_v and not needs_a:
-            # Já é nativamente H.264 + AAC, nenhuma conversão necessária!
+            # Já é nativamente H.264 / HEVC / AV1 + AAC, NENHUMA conversão necessária!
             return filepath
 
         if job_id:
@@ -88,15 +88,11 @@ def make_quicktime_compatible(filepath, job_id=None):
         dir_name = os.path.dirname(filepath)
         base_name = os.path.basename(filepath)
         tag = str(job_id or os.getpid())
-        # Arquivos ocultos (iniciados por ponto) para não poluir o Finder
-        tmp_in = os.path.join(dir_name, f".{base_name}.{tag}.src.mp4")
-        tmp_out = os.path.join(dir_name, f".{base_name}.{tag}.qt.mp4")
+        # Arquivo temporário oculto onde o ffmpeg grava a conversão
+        # O arquivo original (filepath) NUNCA é removido ou escondido do Finder durante o processo!
+        tmp_out = os.path.join(dir_name, f".{base_name}.{tag}.converting.mp4")
 
-        # Move o arquivo baixado para o nome temporário oculto
-        # Assim o Finder não exibe o arquivo até que ele esteja 100% pronto e compatível
-        os.replace(filepath, tmp_in)
-
-        ff_cmd = ["ffmpeg", "-y", "-i", tmp_in]
+        ff_cmd = ["ffmpeg", "-y", "-i", filepath]
         if needs_v:
             ff_cmd += ["-c:v", "h264_videotoolbox", "-pix_fmt", "yuv420p", "-b:v", "10M"]
         else:
@@ -112,7 +108,7 @@ def make_quicktime_compatible(filepath, job_id=None):
         conv = subprocess.run(ff_cmd, capture_output=True, text=True)
         if conv.returncode != 0:
             # Fallback seguro para libx264 se o VideoToolbox rejeitar o formato
-            ff_cmd_fallback = ["ffmpeg", "-y", "-i", tmp_in]
+            ff_cmd_fallback = ["ffmpeg", "-y", "-i", filepath]
             if needs_v:
                 ff_cmd_fallback += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
             else:
@@ -124,9 +120,6 @@ def make_quicktime_compatible(filepath, job_id=None):
             ff_cmd_fallback += ["-movflags", "+faststart", tmp_out]
             conv2 = subprocess.run(ff_cmd_fallback, capture_output=True, text=True)
             if conv2.returncode != 0:
-                # Se falhar a conversão, restaura o arquivo original
-                if os.path.exists(tmp_in):
-                    os.replace(tmp_in, filepath)
                 if os.path.exists(tmp_out):
                     try:
                         os.remove(tmp_out)
@@ -135,17 +128,15 @@ def make_quicktime_compatible(filepath, job_id=None):
                 return filepath
 
         if os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 1000:
-            # Sucesso: substitui atomicamente para o arquivo final visível no Finder
+            # Conversão concluída com sucesso: substitui atomicamente para o arquivo final
             os.replace(tmp_out, filepath)
-            if os.path.exists(tmp_in):
-                try:
-                    os.remove(tmp_in)
-                except OSError:
-                    pass
             return filepath
         else:
-            if os.path.exists(tmp_in):
-                os.replace(tmp_in, filepath)
+            if os.path.exists(tmp_out):
+                try:
+                    os.remove(tmp_out)
+                except OSError:
+                    pass
     except Exception:
         pass
     return filepath
@@ -158,9 +149,9 @@ def run_job(job_id, url, height, title, referer):
         h = int(height)
     except (TypeError, ValueError):
         h = 0
-    # Até 1080p: prefere H.264 (avc). Acima de 1080p (1440p/2160p): prefere AV1 (av01),
-    # que é nativo no Apple Silicon (M3/M4), tem menos da metade do tamanho do VP9 e dispensa re-encode!
-    sort_codec = "res,vcodec:av01:avc,acodec:m4a" if h > 1080 else "res,vcodec:avc:av01,acodec:m4a"
+    # Até 1080p: prefere H.264 (avc/h264). Acima de 1080p (1440p/2160p): prefere AV1 (av01),
+    # que é nativo no Apple Silicon (M3/M4), tem metade do tamanho do VP9 e dispensa re-encode!
+    sort_codec = "vcodec:av01,res,acodec:m4a" if h > 1080 else "vcodec:h264:avc,res,acodec:m4a"
 
     cmd = [
         "yt-dlp",

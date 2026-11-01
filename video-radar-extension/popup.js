@@ -184,7 +184,7 @@ function buildYtDlpCommand(item) {
       ? `https://www.youtube.com/watch?v=${item.videoId}`
       : (item.pageUrl && /youtube\.com|youtu\.be/i.test(item.pageUrl) ? item.pageUrl : targetUrl);
     const fmt = h > 0 ? `bv*[height<=${h}]+ba/b[height<=${h}]/b` : 'bv*+ba/b';
-    const sortCodec = h > 1080 ? 'res,vcodec:av01:avc,acodec:m4a' : 'res,vcodec:avc:av01,acodec:m4a';
+    const sortCodec = h > 1080 ? 'vcodec:av01,res,acodec:m4a' : 'vcodec:h264:avc,res,acodec:m4a';
     return `yt-dlp -f '${fmt}' -S '${sortCodec}' --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(filename + '%(height& [{}p]|)s.%(ext)s')} ${shq(ytUrl)}`;
   }
 
@@ -698,7 +698,10 @@ function renderList() {
         // Preenche as opções de qualidade
         qualityMenu.innerHTML = '';
         if (isYouTube) {
-          YT_HEIGHTS.forEach((h) => {
+          const heightsList = (Array.isArray(item.availableHeights) && item.availableHeights.length > 0)
+            ? YT_HEIGHTS.filter((h) => item.availableHeights.some((ah) => Math.abs(ah - h.height) <= 40))
+            : YT_HEIGHTS;
+          (heightsList.length > 0 ? heightsList : YT_HEIGHTS).forEach((h) => {
             const opt = document.createElement('div');
             const isSelected = (item.selectedHeight || 1080) === h.height;
             opt.className = `dropdown-item ${isSelected ? 'active' : ''}`;
