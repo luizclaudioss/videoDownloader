@@ -6,10 +6,12 @@ A extensão envia {url, height, title, referer} e o arquivo final (.mp4 compatí
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 PORT = 47654
 OUT_DIR = os.path.expanduser("~/Downloads/VideoRadar")
@@ -142,7 +144,25 @@ def make_quicktime_compatible(filepath, job_id=None):
     return filepath
 
 
+def clean_video_url(raw_url):
+    if not raw_url or "pandavideo.com" not in raw_url.lower():
+        return raw_url
+    try:
+        parsed = urlparse(raw_url)
+        if ".m3u8" in parsed.path.lower():
+            filtered_qs = [
+                (k, v)
+                for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                if k.lower() not in ("token", "get_qualities", "substitute")
+            ]
+            return urlunparse(parsed._replace(query=urlencode(filtered_qs)))
+    except Exception:
+        pass
+    return raw_url
+
+
 def run_job(job_id, url, height, title, referer):
+    url = clean_video_url(url)
     dedup_key = (url, str(height or 0))
     os.makedirs(OUT_DIR, exist_ok=True)
     try:
@@ -152,6 +172,13 @@ def run_job(job_id, url, height, title, referer):
     # Até 1080p: prefere H.264 (avc/h264). Acima de 1080p (1440p/2160p): prefere AV1 (av01),
     # que é nativo no Apple Silicon (M3/M4), tem metade do tamanho do VP9 e dispensa re-encode!
     sort_codec = "vcodec:av01,res,acodec:m4a" if h > 1080 else "vcodec:h264:avc,res,acodec:m4a"
+
+    clean_title = re.sub(r'[<>:"/\\|?*\x00-\x1F]', " ", (title or "").strip()).strip()[:90]
+    out_tmpl = (
+        f"{clean_title}%(height& [{{}}p]|)s.%(ext)s"
+        if clean_title and ".m3u8" in url.lower()
+        else "%(title)s%(height& [{}p]|)s.%(ext)s"
+    )
 
     cmd = [
         "yt-dlp",
@@ -163,7 +190,7 @@ def run_job(job_id, url, height, title, referer):
         "-N", "8",
         "-P", OUT_DIR,
         # Adiciona a resolução ao nome do arquivo para permitir resoluções diferentes do mesmo vídeo
-        "-o", "%(title)s%(height& [{}p]|)s.%(ext)s",
+        "-o", out_tmpl,
         "--print", "after_move:filepath",
     ]
     if referer and referer.startswith("http") and "youtube.com" not in url:

@@ -1,7 +1,31 @@
 // hls-downloader.js - Baixa streams .m3u8 (com suporte a Referer e AES-128) e converte para .MP4 compatível com QuickTime/macOS
 
+function cleanPandaVideoUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+  try {
+    const u = new URL(rawUrl);
+    if (/pandavideo\.com(\.br)?/i.test(u.hostname)) {
+      if (/\.m3u8/i.test(u.pathname)) {
+        u.searchParams.delete('token');
+        u.searchParams.delete('get_qualities');
+        u.searchParams.delete('substitute');
+        return u.toString();
+      }
+      const pzMatch = u.hostname.match(/(vz-[a-z0-9]{8}-[a-z0-9]{3})/i);
+      const vId = u.searchParams.get('v');
+      if (pzMatch && vId && /^[0-9a-f-]{36}$/i.test(vId)) {
+        const pullzone = pzMatch[1].toLowerCase();
+        const domainSuffix = u.hostname.endsWith('.br') ? '.tv.pandavideo.com.br' : '.tv.pandavideo.com';
+        const watermark = u.searchParams.get('watermark');
+        return `https://b-${pullzone}${domainSuffix}/${vId.toLowerCase()}/playlist.m3u8${watermark ? `?watermark=${encodeURIComponent(watermark)}` : ''}`;
+      }
+    }
+  } catch {}
+  return rawUrl;
+}
+
 const params = new URLSearchParams(window.location.search);
-const initialUrl = params.get('url') || '';
+const initialUrl = cleanPandaVideoUrl(params.get('url') || '');
 const initialTitle = params.get('title') || 'video_capturado';
 const refererUrl = params.get('referer') || '';
 const autoStart = params.get('autostart') === '1';
@@ -20,6 +44,15 @@ titleInput.value = initialTitle.replace(/\.(mp4|ts|m3u8)$/i, '');
 urlInput.value = initialUrl;
 
 let selectedPlaylistUrl = initialUrl;
+
+urlInput.addEventListener('change', () => {
+  const cleaned = cleanPandaVideoUrl(urlInput.value.trim());
+  urlInput.value = cleaned;
+  selectedPlaylistUrl = cleaned;
+  if (cleaned) {
+    inspectM3u8(cleaned);
+  }
+});
 
 function resolveUrl(rel, base) {
   try {
@@ -459,16 +492,18 @@ function shq(str) {
 
 btnCopyYtdlp.addEventListener('click', async () => {
   const cleanName = titleInput.value || 'video';
+  const targetUrl = cleanPandaVideoUrl(selectedPlaylistUrl || urlInput.value.trim() || initialUrl);
   const refPart = refererUrl ? `--referer ${shq(refererUrl)} ` : '';
-  const cmd = `yt-dlp ${refPart}-N 8 --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(cleanName + '.%(ext)s')} ${shq(initialUrl)}`;
+  const cmd = `yt-dlp ${refPart}-N 8 --force-overwrites --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(cleanName + '.%(ext)s')} ${shq(targetUrl)}`;
   await navigator.clipboard.writeText(cmd);
   statusText.textContent = '✅ Comando yt-dlp copiado (salvará em Downloads/VideoRadar)!';
 });
 
 btnCopyFfmpeg.addEventListener('click', async () => {
   const cleanName = titleInput.value || 'video';
+  const targetUrl = cleanPandaVideoUrl(selectedPlaylistUrl || urlInput.value.trim() || initialUrl);
   const refPart = refererUrl ? `-headers ${shq('Referer: ' + refererUrl + '\r\n')} ` : '';
-  const cmd = `ffmpeg ${refPart}-i ${shq(initialUrl)} -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/VideoRadar/"${shq(cleanName + '.mp4')}`;
+  const cmd = `ffmpeg ${refPart}-i ${shq(targetUrl)} -c copy -bsf:a aac_adtstoasc "$HOME/Downloads/VideoRadar/"${shq(cleanName + '.mp4')}`;
   await navigator.clipboard.writeText(cmd);
   statusText.textContent = '✅ Comando ffmpeg copiado (salvará em Downloads/VideoRadar)!';
 });

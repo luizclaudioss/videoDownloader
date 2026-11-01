@@ -9,15 +9,23 @@
   function getBestTitle(el) {
     if (el) {
       const aria = el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('data-title');
-      if (aria && aria.trim().length > 2) return aria.trim();
+      if (aria && aria.trim().length > 2 && !/^Panda Video\s*-\s*Hospedagem de video$/i.test(aria.trim())) {
+        return aria.trim();
+      }
     }
     const ogTitle = document.querySelector('meta[property="og:title"]');
-    if (ogTitle && ogTitle.content) return ogTitle.content.trim();
+    if (ogTitle && ogTitle.content && !/^Panda Video\s*-\s*Hospedagem de video$/i.test(ogTitle.content.trim())) {
+      return ogTitle.content.trim();
+    }
     const h1 = document.querySelector('h1');
     if (h1 && h1.textContent && h1.textContent.trim().length > 2) {
       return h1.textContent.trim().slice(0, 120);
     }
-    return (document.title || '').trim();
+    const docTitle = (document.title || '').trim();
+    if (/^Panda Video\s*-\s*Hospedagem de video$/i.test(docTitle)) {
+      return '';
+    }
+    return docTitle;
   }
 
   function resolveUrl(raw) {

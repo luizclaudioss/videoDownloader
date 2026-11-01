@@ -83,6 +83,22 @@ function cleanMetaCdnVideoUrl(rawUrl) {
       u.searchParams.delete('byteend');
       return u.toString();
     }
+    if (/pandavideo\.com(\.br)?/i.test(u.hostname)) {
+      if (/\.m3u8/i.test(u.pathname)) {
+        u.searchParams.delete('token');
+        u.searchParams.delete('get_qualities');
+        u.searchParams.delete('substitute');
+        return u.toString();
+      }
+      const pzMatch = u.hostname.match(/(vz-[a-z0-9]{8}-[a-z0-9]{3})/i);
+      const vId = u.searchParams.get('v');
+      if (pzMatch && vId && /^[0-9a-f-]{36}$/i.test(vId)) {
+        const pullzone = pzMatch[1].toLowerCase();
+        const domainSuffix = u.hostname.endsWith('.br') ? '.tv.pandavideo.com.br' : '.tv.pandavideo.com';
+        const watermark = u.searchParams.get('watermark');
+        return `https://b-${pullzone}${domainSuffix}/${vId.toLowerCase()}/playlist.m3u8${watermark ? `?watermark=${encodeURIComponent(watermark)}` : ''}`;
+      }
+    }
   } catch {}
   return rawUrl;
 }
@@ -175,7 +191,7 @@ function shq(str) {
 function buildYtDlpCommand(item) {
   const filename = sanitizeFilename(item.title);
   const ref = item.referer || item.pageUrl || '';
-  const targetUrl = item.selectedVariantUrl || item.url;
+  const targetUrl = cleanMetaCdnVideoUrl(item.selectedVariantUrl || item.url);
   const h = item.selectedHeight || 0;
 
   const isYt = /youtube\.com|youtu\.be|googlevideo\.com/i.test(targetUrl) || item.videoId;
@@ -185,7 +201,7 @@ function buildYtDlpCommand(item) {
       : (item.pageUrl && /youtube\.com|youtu\.be/i.test(item.pageUrl) ? item.pageUrl : targetUrl);
     const fmt = h > 0 ? `bv*[height<=${h}]+ba/b[height<=${h}]/b` : 'bv*+ba/b';
     const sortCodec = h > 1080 ? 'vcodec:av01,res,acodec:m4a' : 'vcodec:h264:avc,res,acodec:m4a';
-    return `yt-dlp -f '${fmt}' -S '${sortCodec}' --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(filename + '%(height& [{}p]|)s.%(ext)s')} ${shq(ytUrl)}`;
+    return `yt-dlp -f '${fmt}' -S '${sortCodec}' --force-overwrites --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(filename + '%(height& [{}p]|)s.%(ext)s')} ${shq(ytUrl)}`;
   }
 
   const parts = ['yt-dlp'];
@@ -194,6 +210,7 @@ function buildYtDlpCommand(item) {
   }
   parts.push('-N 8');
   parts.push('-S "res,vcodec:avc,acodec:m4a"');
+  parts.push('--force-overwrites');
   parts.push('--merge-output-format mp4');
   parts.push('-P "$HOME/Downloads/VideoRadar"');
   parts.push(`-o ${shq(filename + '%(height& [{}p]|)s.%(ext)s')}`);
@@ -205,7 +222,7 @@ function buildYtDlpCommand(item) {
 function buildFfmpegCommand(item) {
   const filename = sanitizeFilename(item.title);
   const ref = item.referer || item.pageUrl || '';
-  const targetUrl = item.selectedVariantUrl || item.url;
+  const targetUrl = cleanMetaCdnVideoUrl(item.selectedVariantUrl || item.url);
   const parts = ['ffmpeg'];
 
   if (ref && ref.startsWith('http')) {
@@ -235,8 +252,9 @@ async function copyText(text, feedbackMsg) {
 
 function openHlsDownloader(url, title, referer) {
   const filename = sanitizeFilename(title);
+  const cleanUrl = cleanMetaCdnVideoUrl(url);
   const downloaderUrl = chrome.runtime.getURL(
-    `hls-downloader.html?url=${encodeURIComponent(url)}&title=${encodeURIComponent(filename)}&referer=${encodeURIComponent(referer || '')}&autostart=1`
+    `hls-downloader.html?url=${encodeURIComponent(cleanUrl)}&title=${encodeURIComponent(filename)}&referer=${encodeURIComponent(referer || '')}&autostart=1`
   );
   chrome.tabs.create({ url: downloaderUrl });
 }
@@ -982,13 +1000,15 @@ btnToggleUrlInput.addEventListener('click', () => {
 });
 
 async function handleCustomUrlDownload() {
-  const rawUrl = (customUrlInput ? customUrlInput.value : '').trim();
+  const inputUrl = (customUrlInput ? customUrlInput.value : '').trim();
 
-  if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+  if (!inputUrl || !/^https?:\/\//i.test(inputUrl)) {
     showToast('Cole um link válido começando com http:// ou https://');
     customUrlInput.focus();
     return;
   }
+
+  const rawUrl = cleanMetaCdnVideoUrl(inputUrl);
 
   const defaultReferer = currentTab && currentTab.url && /^https?:\/\//i.test(currentTab.url) ? currentTab.url : rawUrl;
   const fallbackTitle = (currentTab && currentTab.title) || 'video_capturado';

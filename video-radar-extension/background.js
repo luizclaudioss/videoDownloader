@@ -92,8 +92,36 @@ function cleanMetaCdnVideoUrl(rawUrl) {
       u.searchParams.delete('byteend');
       return u.toString();
     }
+    if (/pandavideo\.com(\.br)?/i.test(u.hostname) && /\.m3u8/i.test(u.pathname)) {
+      u.searchParams.delete('token');
+      u.searchParams.delete('get_qualities');
+      u.searchParams.delete('substitute');
+      return u.toString();
+    }
   } catch {}
   return rawUrl;
+}
+
+function extractPandaVideoMeta(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  if (/vz-ded14ebd-85a|[?&]substitute=1/i.test(rawUrl)) return null;
+  try {
+    const u = new URL(rawUrl);
+    if (!/pandavideo\.com(\.br)?/i.test(u.hostname)) return null;
+    const pzMatch = u.hostname.match(/(vz-[a-z0-9]{8}-[a-z0-9]{3})/i) || u.pathname.match(/(vz-[a-z0-9]{8}-[a-z0-9]{3})/i);
+    const uuidSource = u.searchParams.get('v') || u.pathname;
+    const uuidMatch = uuidSource.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+    if (!pzMatch || !uuidMatch) return null;
+    const pullzone = pzMatch[1].toLowerCase();
+    const videoId = uuidMatch[1].toLowerCase();
+    const domainSuffix = u.hostname.endsWith('.br') ? '.tv.pandavideo.com.br' : '.tv.pandavideo.com';
+    const watermark = u.searchParams.get('watermark');
+    const masterUrl = `https://b-${pullzone}${domainSuffix}/${videoId}/playlist.m3u8${watermark ? `?watermark=${encodeURIComponent(watermark)}` : ''}`;
+    const thumbnailUrl = `https://cdn.pandavideo.com/${pullzone}/${videoId}/thumbnail.jpg`;
+    return { pullzone, videoId, masterUrl, thumbnailUrl };
+  } catch {
+    return null;
+  }
 }
 
 const PROVIDER_PATTERNS = [
@@ -208,6 +236,11 @@ function isIgnoredNoiseUrl(url) {
   if (!url || typeof url !== 'string') return true;
   if (deadUrlsCache.has(url)) return true;
   if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('chrome-extension:')) {
+    return true;
+  }
+
+  // Ignora vídeos substitutos/fakes de proteção do Panda Video e probes de qualidade
+  if (/vz-ded14ebd-85a|[?&](?:substitute|get_qualities)=1/i.test(url)) {
     return true;
   }
 
@@ -1178,6 +1211,26 @@ async function removeDetectedVideo(tabId, url) {
 async function registerDetectedVideo(tabId, rawItem) {
   if (!tabId || tabId < 0 || !rawItem || !rawItem.url) return;
 
+  // Se o item for do Panda Video (embed ou m3u8 com token descartável), normaliza para a Master Playlist limpa
+  const pandaMeta = extractPandaVideoMeta(rawItem.url);
+  if (pandaMeta) {
+    const cleanTitle = /^Panda Video\s*-\s*Hospedagem de video$/i.test((rawItem.title || '').trim())
+      ? ''
+      : (rawItem.title || '');
+    rawItem = {
+      ...rawItem,
+      url: pandaMeta.masterUrl,
+      title: cleanTitle,
+      thumbnailUrl: rawItem.thumbnailUrl || pandaMeta.thumbnailUrl,
+      providerOverride: 'Panda Video'
+    };
+  } else {
+    rawItem = {
+      ...rawItem,
+      url: cleanMetaCdnVideoUrl(rawItem.url)
+    };
+  }
+
   // Se o item for uma URL de post do X/Twitter, resolve o MP4 direto automaticamente
   const tweetIdFromUrl =
     extractTweetIdFromUrl(rawItem.url) ||
@@ -1230,20 +1283,27 @@ async function registerDetectedVideo(tabId, rawItem) {
   const existing = map.get(key);
   const now = Date.now();
 
+  const existingRef = (existing && existing.referer) || '';
+  const isIframePlayerRef = /player-vz-[a-z0-9-]+\.tv\.pandavideo\.com|player\.vimeo\.com|fast\.wistia\./i.test(referer);
+  const bestReferer = (isIframePlayerRef && existingRef && !/player-vz-|player\.vimeo|fast\.wistia/i.test(existingRef))
+    ? existingRef
+    : (referer || existingRef || '');
+
   const merged = {
+    ...(existing || {}),
     key,
     url: classification.url,
     provider: rawItem.providerOverride || classification.provider,
     badgeColor: classification.badgeColor,
     category: classification.category,
     format: classification.format,
-    isMasterPlaylist: classification.isMasterPlaylist,
-    qualityHint: rawItem.qualityHint || classification.qualityHint || (existing && existing.qualityHint) || null,
-    priority: classification.priority,
+    isMasterPlaylist: (existing && existing.isMasterPlaylist) || classification.isMasterPlaylist,
+    qualityHint: (existing && existing.selectedVariantUrl && existing.qualityHint) || rawItem.qualityHint || (existing && existing.qualityHint) || classification.qualityHint || null,
+    priority: Math.max(classification.priority || 0, (existing && existing.priority) || 0),
     title: (existing && existing.customTitle) || rawItem.title || (existing && existing.title) || '',
     customTitle: (existing && existing.customTitle) || null,
     pageUrl: rawItem.pageUrl || (existing && existing.pageUrl) || '',
-    referer: referer || (existing && existing.referer) || '',
+    referer: bestReferer,
     frameUrl: rawItem.frameUrl || (existing && existing.frameUrl) || '',
     sizeBytes: rawItem.sizeBytes || (existing && existing.sizeBytes) || null,
     sourceType: existing ? existing.sourceType : (rawItem.sourceType || 'network'),
@@ -1251,6 +1311,23 @@ async function registerDetectedVideo(tabId, rawItem) {
     thumbnailUrl: rawItem.thumbnailUrl || classification.thumbnailUrl || (existing && existing.thumbnailUrl) || null,
     duration: rawItem.duration || (existing && existing.duration) || null
   };
+
+  if (pandaMeta && (!merged.title || !merged.pageUrl || /player-vz-[a-z0-9-]+\.tv\.pandavideo\.com/i.test(merged.referer))) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab) {
+        if (!merged.title && tab.title && !/^Panda Video\s*-\s*Hospedagem de video$/i.test(tab.title.trim())) {
+          merged.title = tab.title.trim();
+        }
+        if (tab.url && /^https?:\/\//i.test(tab.url) && !/pandavideo\.com/i.test(tab.url)) {
+          if (!merged.pageUrl) merged.pageUrl = tab.url;
+          if (!merged.referer || /player-vz-[a-z0-9-]+\.tv\.pandavideo\.com/i.test(merged.referer)) {
+            merged.referer = tab.url;
+          }
+        }
+      }
+    } catch {}
+  }
 
   // Se não possui thumbnail definida, tenta derivar para YouTube ou Vimeo
   if (!merged.thumbnailUrl) {
