@@ -2,7 +2,7 @@
 """Video Radar Helper — servidor local (127.0.0.1) que baixa vídeos com yt-dlp na qualidade escolhida.
 
 A extensão envia {url, height, title, referer} e o arquivo final (.mp4 compatível com QuickTime / macOS)
-é salvo em ~/Downloads/VideoRadar com a resolução no nome (ex: "Titulo [720p].mp4", "Titulo [1080p].mp4").
+é salvo em ~/Downloads/VideoRadar com a resolução no nome (ex: "Titulo [720p].mp4", "Titulo [2160p].mp4").
 """
 import json
 import os
@@ -17,8 +17,24 @@ EXTRA_PATHS = [os.path.expanduser("~/.local/bin"), "/usr/local/bin", "/opt/homeb
 os.environ["PATH"] = os.pathsep.join(EXTRA_PATHS + [os.environ.get("PATH", "")])
 
 jobs = {}  # id -> {"status": "running|done|error", "message": str}
+active_keys = {}  # (url, height_str) -> job_id
 jobs_lock = threading.Lock()
 counter = [0]
+
+
+def cleanup_stale_temp_files():
+    """Remove eventuais resíduos de arquivos temporários de execuções anteriores."""
+    if not os.path.isdir(OUT_DIR):
+        return
+    try:
+        for fname in os.listdir(OUT_DIR):
+            if fname.endswith(".qt_temp.mp4") or (fname.startswith(".") and (".qt." in fname or ".src." in fname)):
+                try:
+                    os.remove(os.path.join(OUT_DIR, fname))
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
 
 def build_format(height):
@@ -31,11 +47,15 @@ def build_format(height):
     return f"bv*[height<={h}]+ba/b[height<={h}]/b"
 
 
-def make_quicktime_compatible(filepath):
+def make_quicktime_compatible(filepath, job_id=None):
     """Garante que o arquivo MP4 final abra perfeitamente no QuickTime Player do macOS.
 
-    QuickTime exige vídeo H.264 (ou HEVC) e áudio AAC. Se o vídeo vier em VP9/AV1 ou áudio em Opus,
-    converte rapidamente usando aceleração de hardware Apple Silicon (h264_videotoolbox).
+    QuickTime exige vídeo H.264 (ou HEVC) e áudio AAC.
+    No YouTube, resoluções até 1080p já vêm nativamente em H.264 + AAC.
+    Em 1440p e 2160p (4K), o YouTube fornece apenas VP9 ou AV1. Nestes casos,
+    converte rapidamente em hardware (Apple Silicon via h264_videotoolbox).
+    Usa arquivos temporários ocultos (iniciados com ponto '.') para que NENHUM
+    arquivo '.temp' apareça visível no Finder durante o processo.
     """
     if not filepath or not os.path.exists(filepath):
         return filepath
@@ -59,8 +79,23 @@ def make_quicktime_compatible(filepath):
             # Já é nativamente H.264 + AAC, nenhuma conversão necessária!
             return filepath
 
-        tmp_out = filepath + ".qt_temp.mp4"
-        ff_cmd = ["ffmpeg", "-y", "-i", filepath]
+        if job_id:
+            with jobs_lock:
+                if job_id in jobs:
+                    jobs[job_id]["message"] = "Otimizando para QuickTime..."
+
+        dir_name = os.path.dirname(filepath)
+        base_name = os.path.basename(filepath)
+        tag = str(job_id or os.getpid())
+        # Arquivos ocultos (iniciados por ponto) para não poluir o Finder
+        tmp_in = os.path.join(dir_name, f".{base_name}.{tag}.src.mp4")
+        tmp_out = os.path.join(dir_name, f".{base_name}.{tag}.qt.mp4")
+
+        # Move o arquivo baixado para o nome temporário oculto
+        # Assim o Finder não exibe o arquivo até que ele esteja 100% pronto e compatível
+        os.replace(filepath, tmp_in)
+
+        ff_cmd = ["ffmpeg", "-y", "-i", tmp_in]
         if needs_v:
             ff_cmd += ["-c:v", "h264_videotoolbox", "-pix_fmt", "yuv420p", "-b:v", "10M"]
         else:
@@ -76,7 +111,7 @@ def make_quicktime_compatible(filepath):
         conv = subprocess.run(ff_cmd, capture_output=True, text=True)
         if conv.returncode != 0:
             # Fallback seguro para libx264 se o VideoToolbox rejeitar o formato
-            ff_cmd_fallback = ["ffmpeg", "-y", "-i", filepath]
+            ff_cmd_fallback = ["ffmpeg", "-y", "-i", tmp_in]
             if needs_v:
                 ff_cmd_fallback += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
             else:
@@ -88,6 +123,9 @@ def make_quicktime_compatible(filepath):
             ff_cmd_fallback += ["-movflags", "+faststart", tmp_out]
             conv2 = subprocess.run(ff_cmd_fallback, capture_output=True, text=True)
             if conv2.returncode != 0:
+                # Se falhar a conversão, restaura o arquivo original
+                if os.path.exists(tmp_in):
+                    os.replace(tmp_in, filepath)
                 if os.path.exists(tmp_out):
                     try:
                         os.remove(tmp_out)
@@ -96,14 +134,24 @@ def make_quicktime_compatible(filepath):
                 return filepath
 
         if os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 1000:
+            # Sucesso: substitui atomicamente para o arquivo final visível no Finder
             os.replace(tmp_out, filepath)
+            if os.path.exists(tmp_in):
+                try:
+                    os.remove(tmp_in)
+                except OSError:
+                    pass
             return filepath
+        else:
+            if os.path.exists(tmp_in):
+                os.replace(tmp_in, filepath)
     except Exception:
         pass
     return filepath
 
 
 def run_job(job_id, url, height, title, referer):
+    dedup_key = (url, str(height or 0))
     os.makedirs(OUT_DIR, exist_ok=True)
     cmd = [
         "yt-dlp",
@@ -136,7 +184,7 @@ def run_job(job_id, url, height, title, referer):
 
             # Garante compatibilidade total com QuickTime Player (H.264 + AAC)
             if final_filepath:
-                final_filepath = make_quicktime_compatible(final_filepath)
+                final_filepath = make_quicktime_compatible(final_filepath, job_id=job_id)
 
             with jobs_lock:
                 jobs[job_id] = {"status": "done", "message": "Concluído", "file": final_filepath}
@@ -147,6 +195,10 @@ def run_job(job_id, url, height, title, referer):
     except FileNotFoundError:
         with jobs_lock:
             jobs[job_id] = {"status": "error", "message": "yt-dlp não encontrado"}
+    finally:
+        with jobs_lock:
+            if active_keys.get(dedup_key) == job_id:
+                active_keys.pop(dedup_key, None)
 
     if shutil.which("osascript"):
         status = jobs[job_id]["status"]
@@ -205,13 +257,25 @@ class Handler(BaseHTTPRequestHandler):
         if not url.startswith("http"):
             self._send(400, {"ok": False, "error": "URL inválida"})
             return
+
+        height = data.get("height")
+        dedup_key = (url, str(height or 0))
+
         with jobs_lock:
+            existing_id = active_keys.get(dedup_key)
+            if existing_id and jobs.get(existing_id, {}).get("status") == "running":
+                # Já existe download em andamento para este mesmo vídeo nesta resolução
+                self._send(200, {"ok": True, "id": existing_id, "already_running": True})
+                return
+
             counter[0] += 1
             job_id = str(counter[0])
             jobs[job_id] = {"status": "running", "message": "Baixando..."}
+            active_keys[dedup_key] = job_id
+
         threading.Thread(
             target=run_job,
-            args=(job_id, url, data.get("height"), data.get("title", ""), data.get("referer", "")),
+            args=(job_id, url, height, data.get("title", ""), data.get("referer", "")),
             daemon=True,
         ).start()
         self._send(200, {"ok": True, "id": job_id})
@@ -221,4 +285,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    cleanup_stale_temp_files()
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

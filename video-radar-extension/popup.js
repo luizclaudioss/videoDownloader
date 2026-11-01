@@ -376,7 +376,11 @@ async function handleDirectDownload(item) {
     const height = item.selectedHeight || 1080;
     const ok = await downloadViaHelper(youTubePageUrl(item), height, item.title, item.referer);
     if (ok) {
-      showToast(`⬇️ Baixando em até ${height}p (Downloads/VideoRadar). Você será avisado ao concluir.`, 4500);
+      if (height >= 1440) {
+        showToast(`⬇️ Baixando em ${height}p (Downloads/VideoRadar). O QuickTime será otimizado automaticamente.`, 5000);
+      } else {
+        showToast(`⬇️ Baixando em até ${height}p (Downloads/VideoRadar). Você será avisado ao concluir.`, 4500);
+      }
       return;
     }
   }
