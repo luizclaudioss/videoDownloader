@@ -184,7 +184,8 @@ function buildYtDlpCommand(item) {
       ? `https://www.youtube.com/watch?v=${item.videoId}`
       : (item.pageUrl && /youtube\.com|youtu\.be/i.test(item.pageUrl) ? item.pageUrl : targetUrl);
     const fmt = h > 0 ? `bv*[height<=${h}]+ba/b[height<=${h}]/b` : 'bv*+ba/b';
-    return `yt-dlp -f '${fmt}' -S 'res,vcodec:avc,acodec:m4a' --merge-output-format mp4 --recode-video mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(filename + '%(height& [{}p]|)s.%(ext)s')} ${shq(ytUrl)}`;
+    const sortCodec = h > 1080 ? 'res,vcodec:av01:avc,acodec:m4a' : 'res,vcodec:avc:av01,acodec:m4a';
+    return `yt-dlp -f '${fmt}' -S '${sortCodec}' --merge-output-format mp4 -P "$HOME/Downloads/VideoRadar" -o ${shq(filename + '%(height& [{}p]|)s.%(ext)s')} ${shq(ytUrl)}`;
   }
 
   const parts = ['yt-dlp'];

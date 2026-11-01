@@ -72,7 +72,8 @@ def make_quicktime_compatible(filepath, job_id=None):
             elif s.get("codec_type") == "audio" and not acodec:
                 acodec = s.get("codec_name")
 
-        needs_v = vcodec not in ("h264",)
+        # QuickTime no macOS (Apple Silicon M-series) suporta nativamente H.264, HEVC e AV1
+        needs_v = vcodec not in ("h264", "hevc", "av01")
         needs_a = acodec not in ("aac",)
 
         if not needs_v and not needs_a:
@@ -153,11 +154,18 @@ def make_quicktime_compatible(filepath, job_id=None):
 def run_job(job_id, url, height, title, referer):
     dedup_key = (url, str(height or 0))
     os.makedirs(OUT_DIR, exist_ok=True)
+    try:
+        h = int(height)
+    except (TypeError, ValueError):
+        h = 0
+    # Até 1080p: prefere H.264 (avc). Acima de 1080p (1440p/2160p): prefere AV1 (av01),
+    # que é nativo no Apple Silicon (M3/M4), tem menos da metade do tamanho do VP9 e dispensa re-encode!
+    sort_codec = "res,vcodec:av01:avc,acodec:m4a" if h > 1080 else "res,vcodec:avc:av01,acodec:m4a"
+
     cmd = [
         "yt-dlp",
         "-f", build_format(height),
-        # Prioriza streams nativos H.264 e AAC para download direto sem re-encode
-        "-S", "res,vcodec:avc,acodec:m4a",
+        "-S", sort_codec,
         "--merge-output-format", "mp4",
         "--force-overwrites",
         "--no-playlist",
